@@ -19,8 +19,10 @@ app.get("/v1/releases/latest", async (c) => {
 
 app.post("/v1/releases", async (c) => {
   if (!(await bearerMatches(c.req.header("Authorization"), c.env.RELEASE_HOOK_SECRET))) return c.body(null, 401);
-  const text = await c.req.text();
-  if (text.length > MAX_HOOK_BODY_BYTES) return c.body(null, 400);
+  const declared = Number(c.req.header("Content-Length") ?? 0);
+  if (!(declared <= MAX_HOOK_BODY_BYTES)) return c.body(null, 400);
+  const text = await readBounded(c.req.raw.body, MAX_HOOK_BODY_BYTES);
+  if (text === null) return c.body(null, 400);
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -36,6 +38,31 @@ app.get("/v1/connect", (c) => {
   if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") return c.body(null, 426, { Upgrade: "websocket" });
   return hubFor(c.env).fetch(c.req.raw);
 });
+
+/** Reads the body as UTF-8, or returns null (cancelling the stream) once it passes `max` bytes. */
+async function readBounded(stream: ReadableStream<Uint8Array> | null, max: number): Promise<string | null> {
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
 
 /** Compares the bearer token with the secret in constant time via fixed-length digests; false when the secret is unset. */
 async function bearerMatches(header: string | undefined, secret: string | undefined): Promise<boolean> {

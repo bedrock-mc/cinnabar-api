@@ -71,4 +71,32 @@ describe("release hook auth", () => {
   it("accepts a 64-char prerelease version", async () => {
     expect((await postRelease({ channel: "beta", version: `1.0.0-${"a".repeat(58)}` })).status).toBe(204);
   });
+
+  it("rejects an oversized declared Content-Length with 400", async () => {
+    const res = await postRelease(JSON.stringify({ channel: "beta", version: "0.2.0", pad: "x".repeat(2048) }));
+    expect(res.status).toBe(400);
+  });
+
+  it("stops reading a streamed oversized body soon after 1 KiB and answers 400", async () => {
+    const total = 8 * 1024 * 1024;
+    const chunk = new Uint8Array(1024).fill(0x20);
+    let produced = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (produced >= total) return controller.close();
+          produced += chunk.length;
+          controller.enqueue(chunk);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const res = await exports.default.fetch("https://api.test/v1/releases", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-hook-secret" },
+      body,
+    });
+    expect(res.status).toBe(400);
+    expect(produced).toBeLessThan(64 * 1024);
+  });
 });
