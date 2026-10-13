@@ -1,6 +1,7 @@
-import { evictDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { admitLookup } from "../src/hub";
+import { Hub, admitLookup } from "../src/hub";
 import { hub, installFakeIssuer, login, postRelease, type Client } from "./helpers";
 
 const open: Client[] = [];
@@ -54,6 +55,20 @@ describe("visibility and lookup", () => {
     alex.close();
     await alex.closed;
     expect((await me.lookup([ALEX])).cinnabar).toEqual([]);
+  });
+
+  it("doesn't restore a player the server disconnected if the Hub wakes before the close completes", async () => {
+    const ME = "2535400000000100";
+    const { client: me } = await player({ xuid: ME });
+    await player({ xuid: ALEX });
+    await runInDurableObject(hub(), async (instance: Hub, state) => {
+      const socketOf = (xuid: string) => state.getWebSockets().find((ws) => ws.deserializeAttachment()?.xuid === xuid)!;
+      const meWs = socketOf(ME);
+      await instance.webSocketMessage(socketOf(ALEX), JSON.stringify({ type: "lookup", id: 1, xuids: ["bad"] }));
+      // Waking from hibernation constructs a fresh Hub from the sockets' attachments.
+      await new Hub(state, env).webSocketMessage(meWs, JSON.stringify({ type: "lookup", id: 9, xuids: [ALEX] }));
+    });
+    expect(await me.next()).toEqual({ type: "lookup_result", id: 9, cinnabar: [] });
   });
 
   it("keeps presence across hibernation", async () => {

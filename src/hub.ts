@@ -35,6 +35,9 @@ type Attachment =
 
 type Ready = Extract<Attachment, { stage: "ready" }>;
 
+/** Written over a forgotten socket's attachment so a wake before the close completes doesn't restore it. */
+const CLOSED = { stage: "closed" } as const;
+
 const releaseKey = (channel: Channel) => `release:${channel}`;
 
 /**
@@ -50,8 +53,11 @@ export class Hub extends DurableObject<Env> {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     for (const ws of ctx.getWebSockets()) {
-      const attachment = ws.deserializeAttachment() as Attachment | null;
-      if (attachment) this.save(ws, attachment, false);
+      const attachment = ws.deserializeAttachment() as Attachment | typeof CLOSED | null;
+      // Handshaking sockets are restored too, so the alarm still closes them at their deadline.
+      if (attachment && attachment.stage !== "closed" && ws.readyState === WebSocket.OPEN) {
+        this.save(ws, attachment, false);
+      }
     }
   }
 
@@ -228,6 +234,11 @@ export class Hub extends DurableObject<Env> {
   private forget(ws: WebSocket): void {
     const attachment = this.sessions.get(ws);
     this.sessions.delete(ws);
+    try {
+      ws.serializeAttachment(CLOSED);
+    } catch {
+      // The socket is already gone, and with it the attachment.
+    }
     if (attachment?.stage === "ready") {
       unindex(this.byXuid, attachment.xuid, ws);
       unindex(this.byChannel, attachment.channel, ws);
