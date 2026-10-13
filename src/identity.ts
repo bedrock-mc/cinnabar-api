@@ -4,6 +4,7 @@ import { PROOF_CONTEXT } from "./protocol";
 export const MULTIPLAYER_AUDIENCE = "api://auth-minecraft-services/multiplayer";
 const KEYS_MAX_AGE_MS = 60 * 60 * 1000;
 const UNKNOWN_KID_COOLDOWN_MS = 30_000;
+const REFRESH_TIMEOUT_MS = 5_000; // half the handshake budget, so the cached-key fallback still lands in time
 const CLOCK_LEEWAY_S = 60;
 const ASYMMETRIC_ALGS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"];
 const XUID = /^[0-9]{1,20}$/;
@@ -39,6 +40,7 @@ export class IssuerKeys {
   constructor(
     issuer: string,
     private readonly fetcher: typeof fetch = (input, init) => fetch(input, init),
+    private readonly refreshDeadline: () => AbortSignal = () => AbortSignal.timeout(REFRESH_TIMEOUT_MS),
   ) {
     this.issuer = canonicalIssuer(issuer);
   }
@@ -78,7 +80,7 @@ export class IssuerKeys {
     const unknownKid =
       keys && kid !== undefined && !keys.kids.has(kid) && now - keys.fetchedAt >= UNKNOWN_KID_COOLDOWN_MS;
     if (!stale && !unknownKid) return keys!;
-    this.refreshing ??= this.fetchKeys(now).finally(() => (this.refreshing = undefined));
+    this.refreshing ??= this.boundedRefresh(now).finally(() => (this.refreshing = undefined));
     try {
       return (this.keys = await this.refreshing);
     } catch (err) {
@@ -87,12 +89,23 @@ export class IssuerKeys {
     }
   }
 
-  private async fetchKeys(now: number): Promise<KeySet> {
-    const config = await this.fetchJson(`${this.issuer}.well-known/openid-configuration`);
+  /** Fetches fresh keys, rejecting with IssuerUnavailable once the deadline passes even if the peer never answers. */
+  private boundedRefresh(now: number): Promise<KeySet> {
+    const signal = this.refreshDeadline();
+    const expired = new Promise<never>((_, reject) => {
+      const fail = () => reject(new IssuerUnavailable("refresh timed out"));
+      if (signal.aborted) fail();
+      else signal.addEventListener("abort", fail, { once: true });
+    });
+    return Promise.race([this.fetchKeys(now, signal), expired]);
+  }
+
+  private async fetchKeys(now: number, signal: AbortSignal): Promise<KeySet> {
+    const config = await this.fetchJson(`${this.issuer}.well-known/openid-configuration`, signal);
     if (canonicalIssuer(String(config.issuer)) !== this.issuer) throw new IssuerUnavailable("issuer mismatch");
     const jwksUri = config.jwks_uri;
     if (typeof jwksUri !== "string" || !jwksUri.startsWith("https://")) throw new IssuerUnavailable("bad jwks_uri");
-    const jwks = (await this.fetchJson(jwksUri)) as unknown as JSONWebKeySet;
+    const jwks = (await this.fetchJson(jwksUri, signal)) as unknown as JSONWebKeySet;
     if (!Array.isArray(jwks.keys)) throw new IssuerUnavailable("bad jwks");
     const advertised = config.id_token_signing_alg_values_supported;
     const algorithms = Array.isArray(advertised) ? ASYMMETRIC_ALGS.filter((a) => advertised.includes(a)) : ["RS256"];
@@ -104,10 +117,10 @@ export class IssuerKeys {
     };
   }
 
-  private async fetchJson(url: string): Promise<Record<string, unknown>> {
+  private async fetchJson(url: string, signal: AbortSignal): Promise<Record<string, unknown>> {
     let res: Response;
     try {
-      res = await this.fetcher(url, { headers: { Accept: "application/json" } });
+      res = await this.fetcher(url, { headers: { Accept: "application/json" }, signal });
     } catch {
       throw new IssuerUnavailable("fetch failed");
     }

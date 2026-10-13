@@ -18,11 +18,17 @@ async function signer(kid: string) {
   return { jwk, token };
 }
 
-/** A fake issuer whose published keys the test can rotate, counting JWKS fetches. */
+type Stall = "none" | "headers" | "body";
+
+/** A fake issuer whose published keys the test can rotate or stall, counting JWKS fetches. */
 function fakeIssuer(initial: object[]) {
-  const state = { keys: initial, jwksFetches: 0, down: false, issuer: ISSUER };
+  const state = { keys: initial, jwksFetches: 0, down: false, issuer: ISSUER, stall: "none" as Stall };
+  const deadlines: AbortController[] = [];
   const fetcher = (async (input: RequestInfo | URL) => {
     if (state.down) throw new TypeError("network down");
+    // Both stalls ignore the abort signal, like a peer that never answers.
+    if (state.stall === "headers") return new Promise<Response>(() => {});
+    if (state.stall === "body") return new Response(new ReadableStream({ start() {} }));
     const url = String(input);
     if (url === `${ISSUER}.well-known/openid-configuration`) {
       return Response.json({
@@ -37,7 +43,12 @@ function fakeIssuer(initial: object[]) {
     }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
-  return { state, keys: new IssuerKeys("https://issuer.test", fetcher) };
+  const refreshDeadline = () => {
+    const controller = new AbortController();
+    deadlines.push(controller);
+    return controller.signal;
+  };
+  return { state, deadlines, keys: new IssuerKeys("https://issuer.test", fetcher, refreshDeadline) };
 }
 
 describe("issuer keys", () => {
@@ -75,6 +86,34 @@ describe("issuer keys", () => {
     await keys.verify(await a.token(t0), t0);
     state.down = true;
     expect(await keys.verify(await a.token(t0 + 2 * HOUR), t0 + 2 * HOUR)).not.toBeNull();
+  });
+
+  it.each(["headers", "body"] as const)(
+    "bounds a refresh whose %s stall, falls back to cached keys, and retries afterwards",
+    async (stall) => {
+      const a = await signer("a");
+      const { state, deadlines, keys } = fakeIssuer([a.jwk]);
+      const t0 = 1_800_000_000_000;
+      await keys.verify(await a.token(t0), t0);
+      state.stall = stall;
+      const later = t0 + HOUR;
+      const stalled = keys.verify(await a.token(later), later);
+      deadlines.at(-1)!.abort();
+      expect(await stalled).toMatchObject({ xuid: "1" });
+      state.stall = "none";
+      expect(await keys.verify(await a.token(later), later + 1)).not.toBeNull();
+      expect(state.jwksFetches).toBe(2);
+    },
+  );
+
+  it("reports an outage when the first refresh stalls past its deadline", async () => {
+    const a = await signer("a");
+    const { state, deadlines, keys } = fakeIssuer([a.jwk]);
+    state.stall = "headers";
+    const t0 = 1_800_000_000_000;
+    const stalled = keys.verify(await a.token(t0), t0);
+    deadlines.at(-1)!.abort();
+    await expect(stalled).rejects.toBeInstanceOf(IssuerUnavailable);
   });
 
   it("refuses a discovery document for another issuer", async () => {
