@@ -159,6 +159,7 @@ export class Hub extends DurableObject<Env> {
     }
     if (!this.sessions.has(ws)) return;
     if (!identity) return this.reject(ws);
+    if (deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
     const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
     this.save(ws, {
       stage: "proof",
@@ -183,6 +184,8 @@ export class Hub extends DurableObject<Env> {
     // Read before indexing so a concurrent recordRelease reaches this socket exactly once, via one path or the other.
     const latest = await this.latestRelease(channel);
     if (!this.sessions.has(ws)) return;
+    // The alarm skips sockets it can't see as handshaking, so a proof that outlived its deadline is refused here.
+    if (pending.deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
     this.save(ws, { stage: "ready", xuid, channel, visible, lookups: [] });
     send(ws, { type: "welcome", xuid, display_name: pending.displayName });
     if (latest && compareVersions(latest.version, pending.clientVersion) > 0) send(ws, { type: "release", ...latest });

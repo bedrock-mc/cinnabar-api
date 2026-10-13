@@ -1,5 +1,5 @@
 import { generateKeyPair } from "jose";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Hub } from "../src/hub";
 import { clientKey, connect, hello, hub, installFakeIssuer, login, mintToken, sign, type Client } from "./helpers";
@@ -167,6 +167,25 @@ describe("handshake timeout", () => {
     });
     expect((await client.closed).code).toBe(4401);
     expect((await authed.lookup([])).type).toBe("lookup_result");
+  });
+});
+
+describe("handshake deadline", () => {
+  it("closes with 4401 when a valid proof lands after the deadline but before the alarm", async () => {
+    const key = await clientKey();
+    const client = track(await connect());
+    client.send(hello(await mintToken({ cpk: key.cpk })));
+    const nonce = (await client.next()).nonce as string;
+    await runInDurableObject(hub(), (_: Hub, state) => {
+      for (const ws of state.getWebSockets()) {
+        const attachment = ws.deserializeAttachment();
+        if (attachment?.nonce === nonce) ws.serializeAttachment({ ...attachment, deadline: Date.now() - 1 });
+      }
+    });
+    await evictDurableObject(hub());
+    client.send({ type: "proof", signature: await sign(key, nonce) });
+    const outcome = await Promise.race([client.next().then((m) => m.type), client.closed.then((c) => c.code)]);
+    expect(outcome).toBe(4401);
   });
 });
 
