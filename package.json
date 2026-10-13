@@ -1,0 +1,35 @@
+{
+  "name": "cinnabar-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cinnabar client API: update notifications and player presence",
+  "license": "MIT",
+  "author": "bedrock-mc",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bedrock-mc/cinnabar-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bedrock-mc/cinnabar-api/issues"
+  },
+  "homepage": "https://github.com/bedrock-mc/cinnabar-api#readme",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types --strict-vars false",
+    "typecheck": "wrangler types --strict-vars false && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "hono": "^4.13.13",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.150.0"
+  }
+}
