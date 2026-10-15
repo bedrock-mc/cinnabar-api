@@ -51,10 +51,9 @@ export class Hub extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, Attachment>();
   private readonly byXuid = new Map<string, Set<WebSocket>>();
   private readonly byChannel = new Map<Channel, Set<WebSocket>>();
-  // Never attach IP-derived data to sockets: these indexes and their salt reset on hibernation.
+  // Never attach IP-derived data to sockets: these hashes and their salt reset on hibernation.
   private readonly ipSalt = crypto.randomUUID();
   private readonly ipBySocket = new WeakMap<WebSocket, string>();
-  private readonly byIp = new Map<string, Set<WebSocket>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -73,8 +72,13 @@ export class Hub extends DurableObject<Env> {
       return new Response(null, { status: 426, headers: { Upgrade: "websocket" } });
     }
     const ipHash = await this.hashIp(request.headers.get("CF-Connecting-IP") ?? "");
+    // Include closing sockets until the platform drops them, independently of authentication and presence.
+    const sockets = this.ctx.getWebSockets();
     // No await between checking the caps and recording the accepted socket.
-    if (this.sessions.size >= MAX_CONNECTIONS || (this.byIp.get(ipHash)?.size ?? 0) >= MAX_CONNECTIONS_PER_IP) {
+    if (
+      sockets.length >= MAX_CONNECTIONS ||
+      sockets.filter((ws) => this.ipBySocket.get(ws) === ipHash).length >= MAX_CONNECTIONS_PER_IP
+    ) {
       return new Response(null, { status: 429, headers: { "Retry-After": String(CONNECTION_RETRY_AFTER_S) } });
     }
     const { 0: client, 1: server } = new WebSocketPair();
@@ -82,7 +86,6 @@ export class Hub extends DurableObject<Env> {
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
     this.save(server, { stage: "hello", deadline });
     this.ipBySocket.set(server, ipHash);
-    index(this.byIp, ipHash, server);
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(deadline);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -156,6 +159,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    this.ipBySocket.delete(ws);
     this.forget(ws);
     try {
       ws.close(code, reason);
@@ -165,6 +169,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
+    this.ipBySocket.delete(ws);
     this.forget(ws);
   }
 
@@ -257,11 +262,6 @@ export class Hub extends DurableObject<Env> {
   private forget(ws: WebSocket): void {
     const attachment = this.sessions.get(ws);
     this.sessions.delete(ws);
-    const ipHash = this.ipBySocket.get(ws);
-    if (ipHash !== undefined) {
-      this.ipBySocket.delete(ws);
-      unindex(this.byIp, ipHash, ws);
-    }
     try {
       ws.serializeAttachment(CLOSED);
     } catch {
