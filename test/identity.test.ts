@@ -1,10 +1,14 @@
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { describe, expect, it } from "vitest";
-import { IssuerKeys, IssuerUnavailable, canonicalIssuer, decodeBase64, encodeBase64Url } from "../src/identity";
+import { IssuerKeys, IssuerUnavailable, canonicalIssuer, decodeBase64, encodeBase64Url, identityUuid } from "../src/identity";
 import { JWKS_REFETCH_INTERVAL_MS } from "../src/protocol";
 import { AUDIENCE, ISSUER, clientKey } from "./helpers";
 
 const HOUR = 60 * 60 * 1000;
+
+it("derives the multiplayer identity UUID from an XUID", async () => {
+  expect(await identityUuid("2535400000000001")).toBe("058728db-7a88-3a63-af82-7174a02a2e35");
+});
 
 /** Creates an issuer key and tokens signed with it. */
 async function signer(kid: string) {

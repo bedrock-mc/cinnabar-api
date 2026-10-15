@@ -67,7 +67,8 @@ export interface Visibility {
 export interface Lookup {
   type: "lookup";
   id: number;
-  xuids: string[];
+  xuids?: string[];
+  uuids?: string[];
 }
 export interface ReleaseRecord {
   channel: Channel;
@@ -86,7 +87,7 @@ export type ServerMessage =
   | ({ type: "welcome"; xuid: string } & WelcomeParameters)
   | { type: "error"; code: "unauthorized" }
   | { type: "error"; code: "rate_limited"; id: number }
-  | { type: "lookup_result"; id: number; cinnabar: string[] }
+  | { type: "lookup_result"; id: number; cinnabar: string[]; cinnabar_uuids?: string[] }
   | ({ type: "release" } & ReleaseRecord);
 
 interface ClientMessages {
@@ -132,6 +133,12 @@ export function decodeClientMessage(text: string): Decoded {
   if (typeof type !== "string") return { kind: "malformed" };
   if (!Object.hasOwn(clientValidators, type)) return { kind: "unknown" };
   if (!clientValidators[type as keyof ClientMessages].validate(value).valid) return { kind: "invalid" };
+  if (type === "lookup") {
+    const lookup = value as Lookup;
+    if ((lookup.xuids?.length ?? 0) + (lookup.uuids?.length ?? 0) > SERVER_PARAMETERS.lookup_batch_max) {
+      return { kind: "invalid" };
+    }
+  }
   return { kind: "message", message: value as ClientMessage };
 }
 

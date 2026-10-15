@@ -145,7 +145,7 @@ describe("release push", () => {
     const { client: stable } = await player({ channel: "stable" });
     expect((await postRelease({ channel: "beta", version: "0.1.19" })).status).toBe(204);
     expect(await beta.next()).toMatchObject({ type: "release", channel: "beta", version: "0.1.19" });
-    expect((await stable.lookup([])).type).toBe("lookup_result");
+    expect((await stable.lookup(["9"])).type).toBe("lookup_result");
   });
 
   it("sends a catch-up release after welcome only when the recorded one is newer", async () => {
@@ -153,8 +153,8 @@ describe("release push", () => {
     const { client: old } = await player({ channel: "nightly", clientVersion: "0.2.0-nightly.1" });
     expect(await old.next()).toMatchObject({ type: "release", channel: "nightly", version: "0.2.0-nightly.2" });
     const { client: current } = await player({ channel: "nightly", clientVersion: "0.2.0-nightly.2" });
-    expect((await current.lookup([])).type).toBe("lookup_result");
+    expect((await current.lookup(["9"])).type).toBe("lookup_result");
     const { client: ahead } = await player({ channel: "nightly", clientVersion: "0.2.0" });
-    expect((await ahead.lookup([])).type).toBe("lookup_result");
+    expect((await ahead.lookup(["9"])).type).toBe("lookup_result");
   });
 });

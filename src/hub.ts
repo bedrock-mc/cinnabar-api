@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { IssuerUnavailable, encodeBase64Url, issuerKeys, verifyProof } from "./identity";
+import { IssuerUnavailable, encodeBase64Url, identityUuid, issuerKeys, verifyProof } from "./identity";
 import {
   Close,
   SERVER_PARAMETERS,
@@ -40,7 +40,7 @@ type Session =
       channel: Channel;
       visible: boolean;
     }
-  | { stage: "ready"; xuid: string; channel: Channel; visible: boolean };
+  | { stage: "ready"; xuid: string; uuid: string; channel: Channel; visible: boolean };
 
 interface Traffic {
   startedAt: number;
@@ -64,6 +64,7 @@ const releaseKey = (channel: Channel) => `release:${channel}`;
 export class Hub extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, Attachment>();
   private readonly byXuid = new Map<string, Set<WebSocket>>();
+  private readonly byUuid = new Map<string, Set<WebSocket>>();
   private readonly linger = new Map<string, number>();
   private readonly byChannel = new Map<Channel, Set<WebSocket>>();
   private readonly sockets = new Set<WebSocket>();
@@ -290,6 +291,7 @@ export class Hub extends DurableObject<Env> {
     if (!this.sessions.has(ws)) return;
     if (!valid) return this.reject(ws);
     const { xuid, channel, visible } = pending;
+    const uuid = await identityUuid(xuid);
     // Read before indexing so a concurrent recordRelease reaches this socket exactly once, via one path or the other.
     const latest = await this.latestRelease(channel);
     if (!this.sessions.has(ws)) return;
@@ -302,8 +304,11 @@ export class Hub extends DurableObject<Env> {
       this.count("admission_refused");
       return this.close(ws, Close.stayAway, `retry_after=${CONNECTION_RETRY_AFTER_S}`);
     }
-    if (!visible) this.linger.delete(xuid);
-    this.save(ws, { stage: "ready", xuid, channel, visible });
+    if (!visible) {
+      this.linger.delete(xuid);
+      this.linger.delete(uuid);
+    }
+    this.save(ws, { stage: "ready", xuid, uuid, channel, visible });
     send(ws, { type: "welcome", xuid, ...SERVER_PARAMETERS });
     if (latest && compareReleases(latest.version, latest.build, pending.clientVersion, pending.clientBuild) > 0) {
       send(ws, { type: "release", ...latest });
@@ -312,14 +317,19 @@ export class Hub extends DurableObject<Env> {
 
   /** Changes this socket's visibility and immediately clears any retained presence on opt-out. */
   private onVisibility(ws: WebSocket, state: Ready, visible: boolean): void {
-    if (!visible) this.linger.delete(state.xuid);
+    if (!visible) {
+      this.linger.delete(state.xuid);
+      this.linger.delete(state.uuid);
+    }
     if (state.visible !== visible) this.save(ws, { ...state, visible });
   }
 
-  /** Charges unique requested XUIDs to the account's durable token bucket before answering. */
+  /** Charges unique identifiers from both arrays to the account's durable token bucket before answering. */
   private onLookup(ws: WebSocket, state: Ready, lookup: Lookup, now: number): void {
     this.count("lookup");
     const xuids = [...new Set(lookup.xuids)];
+    const uuids = [...new Set(lookup.uuids)];
+    const cost = xuids.length + uuids.length;
     const bucket = this.ctx.storage.sql.exec<{ tokens: number; updated_at: number }>(
       "SELECT tokens, updated_at FROM lookup_budgets WHERE xuid = ?", state.xuid,
     ).toArray()[0];
@@ -327,10 +337,10 @@ export class Hub extends DurableObject<Env> {
     const tokens = bucket
       ? Math.min(capacity, bucket.tokens + Math.max(0, now - bucket.updated_at) * SERVER_PARAMETERS.lookup_refill_per_min / 60_000)
       : capacity;
-    const admitted = tokens >= xuids.length;
+    const admitted = tokens >= cost;
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO lookup_budgets (xuid, tokens, updated_at) VALUES (?, ?, ?)",
-      state.xuid, admitted ? tokens - xuids.length : tokens, now,
+      state.xuid, admitted ? tokens - cost : tokens, now,
     );
     this.ctx.waitUntil(this.scheduleAlarm(now + LOOKUP_BUDGET_TTL_MS));
     if (!admitted) {
@@ -343,7 +353,11 @@ export class Hub extends DurableObject<Env> {
       }
       return;
     }
-    send(ws, { type: "lookup_result", id: lookup.id, cinnabar: xuids.filter((xuid) => this.isVisible(xuid)) });
+    send(ws, {
+      type: "lookup_result", id: lookup.id,
+      cinnabar: xuids.filter((xuid) => this.isVisible(xuid)),
+      ...(lookup.uuids !== undefined ? { cinnabar_uuids: uuids.filter((uuid) => this.isVisible(uuid)) } : {}),
+    });
   }
 
   /** Emits one point per counter per invocation; callers aggregate loops, and analytics failures are dropped. */
@@ -370,14 +384,15 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
-  private isVisible(xuid: string): boolean {
-    for (const ws of this.byXuid.get(xuid) ?? []) {
+  /** Checks active and retained visibility for either kind of identifier. */
+  private isVisible(identifier: string): boolean {
+    for (const ws of this.byXuid.get(identifier) ?? this.byUuid.get(identifier) ?? []) {
       const state = this.sessions.get(ws);
       if (state?.stage === "ready" && state.visible) return true;
     }
-    const until = this.linger.get(xuid);
+    const until = this.linger.get(identifier);
     if (until !== undefined && until > Date.now()) return true;
-    this.linger.delete(xuid);
+    this.linger.delete(identifier);
     return false;
   }
 
@@ -416,6 +431,7 @@ export class Hub extends DurableObject<Env> {
     this.sessions.set(ws, attachment);
     if (attachment.stage === "ready") {
       index(this.byXuid, attachment.xuid, ws);
+      index(this.byUuid, attachment.uuid, ws);
       index(this.byChannel, attachment.channel, ws);
     }
   }
@@ -442,10 +458,12 @@ export class Hub extends DurableObject<Env> {
     }
     if (attachment?.stage === "ready") {
       unindex(this.byXuid, attachment.xuid, ws);
+      unindex(this.byUuid, attachment.uuid, ws);
       unindex(this.byChannel, attachment.channel, ws);
       if (attachment.visible || (!this.byXuid.has(attachment.xuid) && this.linger.has(attachment.xuid))) {
         const deadline = Date.now() + PRESENCE_LINGER_MS;
         this.linger.set(attachment.xuid, deadline);
+        this.linger.set(attachment.uuid, deadline);
         this.ctx.waitUntil(this.scheduleAlarm(deadline));
       }
     }

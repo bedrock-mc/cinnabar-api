@@ -35,7 +35,7 @@ describe("identifier-free metrics", () => {
   it("counts authentication failures without tokens or identities", async () => {
     open.push(await connect());
     expect(await record(async (instance, state) => {
-      await instance.webSocketMessage(state.getWebSockets()[0]!, '{"type":"lookup","id":1,"xuids":[]}');
+      await instance.webSocketMessage(state.getWebSockets()[0]!, '{"type":"lookup","id":1,"xuids":["9"]}');
     })).toEqual([[{ blobs: ["authentication_failed"], doubles: [1] }]]);
   });
 
@@ -79,7 +79,7 @@ describe("metrics failures", () => {
     open.push(client);
     await record(async (instance, state) => {
       const ws = state.getWebSockets()[0]!;
-      await instance.webSocketMessage(ws, '{"type":"lookup","id":1,"xuids":[]}');
+      await instance.webSocketMessage(ws, '{"type":"lookup","id":1,"xuids":["9"]}');
       expect(ws.deserializeAttachment()).toEqual({ stage: "closed" });
     }, failingMetrics());
     expect((await client.closed).code).toBe(4401);

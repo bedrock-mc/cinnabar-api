@@ -11,7 +11,7 @@ messages against it.
 | --- | --- |
 | `GET /v1/health` | `{"ok":true,"api":"v1"}` |
 | `POST /v1/releases` | Release hook. `Authorization: Bearer <RELEASE_HOOK_SECRET>`, body `{"channel","version","build"}`; records and broadcasts only a newer (version, build) pair. Repeats and older records are no-ops. Omitted v1 builds mean zero. |
-| `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs recently used Cinnabar, and receives release pushes. |
+| `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs or UUIDs recently used Cinnabar, and receives release pushes. |
 
 Close codes: `4401` failed or timed-out authentication, `1009` frame over 16 KiB, `1007` frame
 that isn't a JSON object with a `type`, `1008` invalid messages, binary frames, flood control or
@@ -27,9 +27,13 @@ The text frame `ping` gets `pong` without waking the Hub.
   sockets close with `4429` and `retry_after=10`.
 - Flood control: at most 30 non-ping frames and 64 KiB of text in each 10-second socket window,
   including hello and proof. After 3 refused lookups, the socket closes with `1008`.
-- Lookups: batches of at most 128 XUIDs share an account bucket of 1,024 tokens, refilling
-  512 per minute. Each unique requested XUID costs one token, including negative answers.
+- Lookups: optional `xuids` and `uuids` arrays must contain at least one identifier between
+  them, with at most 128 identifiers combined. UUIDs use lowercase hyphenated form. Batches
+  share an account bucket of 1,024 tokens, refilling 512 per minute. Each unique requested
+  identifier in each array costs one token, including negative answers.
   Reconnecting or opening another socket does not reset the bucket.
+  Results contain `cinnabar` XUID matches and, when UUIDs were requested, `cinnabar_uuids` UUID
+  matches. Each result array contains only identifiers from its corresponding request array.
 - Welcome advertises `lookup_batch_max`, `lookup_bucket_capacity`, `lookup_refill_per_min`,
   `cache_ttl_ms` (120,000), `ping_interval_ms` (30,000), and `reconnect_max_ms` (300,000).
   These fields and `hello.client_build` are optional in v1. Catch-up compares version, then build.
@@ -43,7 +47,8 @@ The text frame `ping` gets `pong` without waking the Hub.
   linger in Hub memory for `PRESENCE_LINGER_MS` (30 minutes) after their last socket closes.
   Visibility off clears retained presence immediately; another visible socket can still make
   the account visible. Linger is best effort and is lost when the Hub hibernates or restarts.
-- Connection attachments survive hibernation and hold the XUID, visibility, channel, and socket
+- Presence UUIDs are derived from the verified XUID, never supplied by the client at login.
+- Connection attachments survive hibernation and hold the XUID, UUID, visibility, channel, and socket
   flood counters. Handshakes (at most 10 s) temporarily hold the nonce, public key, client version
   and build. Display names and tokens are not stored in attachments or sent in welcome.
 - Account lookup budgets survive reconnects and hibernation in Durable Object storage. Each
