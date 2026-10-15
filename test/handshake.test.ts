@@ -58,7 +58,7 @@ describe("handshake", () => {
     client.send({ type: "proof", signature: await sign(key, challenge.nonce as string), extra: true });
     expect((await client.next()).type).toBe("welcome");
     client.send({ type: "future_thing", data: 1 });
-    expect((await client.lookup(["9"])).type).toBe("lookup_result");
+    expect((await client.lookup([])).type).toBe("lookup_result");
   });
 
   it("issues a fresh nonce per connection", async () => {
@@ -172,7 +172,7 @@ describe("bad proofs", () => {
 
   it("rejects lookups before authentication", async () => {
     const client = track(await connect());
-    client.send({ type: "lookup", id: 1, xuids: ["9"] });
+    client.send({ type: "lookup", id: 1, xuids: [] });
     expect(await client.next()).toEqual({ type: "error", code: "unauthorized" });
     expect((await client.closed).code).toBe(4401);
   });
@@ -193,7 +193,7 @@ describe("handshake timeout", () => {
       instance.expireHandshakes(Date.now() + 10_001);
     });
     expect((await client.closed).code).toBe(4401);
-    expect((await authed.lookup(["9"])).type).toBe("lookup_result");
+    expect((await authed.lookup([])).type).toBe("lookup_result");
   });
 });
 

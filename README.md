@@ -27,8 +27,8 @@ The text frame `ping` gets `pong` without waking the Hub.
   sockets close with `4429` and `retry_after=10`.
 - Flood control: at most 30 non-ping frames and 64 KiB of text in each 10-second socket window,
   including hello and proof. After 3 refused lookups, the socket closes with `1008`.
-- Lookups: optional `xuids` and `uuids` arrays must contain at least one identifier between
-  them, with at most 128 identifiers combined. UUIDs use lowercase hyphenated form. Batches
+- Lookups: optional `xuids` and `uuids` arrays hold at most 128 identifiers combined; an empty
+  lookup gets an empty result. UUIDs use lowercase hyphenated form. Batches
   share an account bucket of 1,024 tokens, refilling 512 per minute. Each unique requested
   identifier in each array costs one token, including negative answers.
   Reconnecting or opening another socket does not reset the bucket.

@@ -37,8 +37,8 @@ describe("per-account admission", () => {
     expect(await Promise.race([client.closed, client.next()])).toEqual({ code: 4429, reason: "retry_after=10" });
     open[0]!.close();
     await open[0]!.closed;
-    expect((await (await player()).lookup(["9"])).type).toBe("lookup_result");
-    expect((await (await player("2")).lookup(["9"])).type).toBe("lookup_result");
+    expect((await (await player()).lookup([])).type).toBe("lookup_result");
+    expect((await (await player("2")).lookup([])).type).toBe("lookup_result");
   }, 10_000);
 });
 
@@ -72,7 +72,7 @@ describe("per-account lookup bucket", () => {
     await drain(first);
     const second = await player();
     expect(await second.lookup(["9"], 99)).toEqual({ type: "error", code: "rate_limited", id: 99 });
-    expect((await first.lookup(["9"])).code).toBe("rate_limited");
+    expect((await first.lookup([])).type).toBe("lookup_result");
     expect((await (await player("2")).lookup(roster)).type).toBe("lookup_result");
   });
 

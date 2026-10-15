@@ -33,7 +33,7 @@ describe("release identities", () => {
     const first = await hub().latestRelease("beta");
     for (const body of [release, { ...release, build: 41 }, { ...release, version: "0.1.99", build: 999 }]) {
       expect((await postRelease(body)).status).toBe(204);
-      expect((await client.lookup(["9"])).type).toBe("lookup_result");
+      expect((await client.lookup([])).type).toBe("lookup_result");
       expect(await hub().latestRelease("beta")).toEqual(first);
     }
     for (const body of [{ ...release, build: 43 }, { ...release, version: "0.2.1", build: 1 }]) {
@@ -53,7 +53,7 @@ describe("release identities", () => {
     expect(await old.next()).toMatchObject({ type: "release", build: 42 });
     for (const clientBuild of [42, 43]) {
       const { client } = await player({ channel: "nightly", clientVersion: "0.2.0", clientBuild });
-      expect((await client.lookup(["9"])).type).toBe("lookup_result");
+      expect((await client.lookup([])).type).toBe("lookup_result");
     }
   });
 

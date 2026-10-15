@@ -26,6 +26,7 @@ describe("decoding", () => {
   const uuid = "058728db-7a88-3a63-af82-7174a02a2e35";
 
   it.each([
+    {}, { xuids: [] }, { uuids: [] }, { xuids: [], uuids: [] },
     { xuids: ["1"] }, { uuids: [uuid] }, { xuids: [], uuids: [uuid] },
     { xuids: ["1"], uuids: [] }, { xuids: ["1"], uuids: [uuid] },
     { xuids: Array(64).fill("1"), uuids: Array(64).fill(uuid) },
@@ -35,7 +36,6 @@ describe("decoding", () => {
   });
 
   it.each([
-    {}, { xuids: [] }, { uuids: [] }, { xuids: [], uuids: [] },
     { uuids: [uuid.toUpperCase()] }, { uuids: [uuid.replaceAll("-", "")] },
     { uuids: [uuid.replace("0", "g")] }, { uuids: [""] }, { uuids: [1] },
     { xuids: ["1"], uuids: null }, { xuids: null, uuids: [uuid] },

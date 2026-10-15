@@ -92,6 +92,17 @@ describe("UUID lookup", () => {
     expect(await lookup(me, { xuids: [ALEX], uuids: [ALEX_UUID] })).toMatchObject({ cinnabar: [], cinnabar_uuids: [] });
   });
 
+  it("answers empty lookups with empty results, free and without closing", async () => {
+    const me = await player();
+    await player({ xuid: ALEX });
+    expect(await lookup(me, {}, 2)).toEqual({ type: "lookup_result", id: 2, cinnabar: [] });
+    expect(await lookup(me, { xuids: [], uuids: [] }, 3)).toEqual({
+      type: "lookup_result", id: 3, cinnabar: [], cinnabar_uuids: [],
+    });
+    const uuids = Array.from({ length: 128 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`);
+    for (let id = 0; id < 8; id++) expect(await lookup(me, { uuids }, id)).toMatchObject({ type: "lookup_result" });
+  });
+
   it("charges both arrays to the same durable account budget", async () => {
     const me = await player();
     const xuids = Array.from({ length: 64 }, (_, i) => String(1000 + i));

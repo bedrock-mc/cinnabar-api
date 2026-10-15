@@ -25,7 +25,7 @@ describe("socket flood control", () => {
   it("limits every non-ping frame, including ignored types, across hibernation", async () => {
     const client = await player();
     for (let i = 0; i < 27; i++) client.send({ type: "future_message" });
-    expect((await client.lookup(["9"])).type).toBe("lookup_result");
+    expect((await client.lookup([])).type).toBe("lookup_result");
     await evictDurableObject(hub());
     client.send({ type: "future_message" });
     expect((await client.closed).code).toBe(1008);

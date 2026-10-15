@@ -68,7 +68,7 @@ describe("connection caps", () => {
         await upgrade(cap === "global" ? `192.0.2.${i + 1}` : "192.0.2.1", { allowHalfOpen: true });
       }
       expectLimited(await upgrade());
-      if (cause === "rejected") open[0]!.send({ type: "lookup", id: 1, xuids: ["9"] });
+      if (cause === "rejected") open[0]!.send({ type: "lookup", id: 1, xuids: [] });
       else {
         await runInDurableObject(hub(), (instance: Hub) => {
           instance.expireHandshakes(Date.now() + HANDSHAKE_TIMEOUT_MS + 1);
