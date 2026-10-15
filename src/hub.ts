@@ -109,8 +109,12 @@ export class Hub extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
     this.sockets.add(server);
-    this.save(server, { stage: "hello", deadline, ipHash });
-    await this.scheduleAlarm(deadline);
+    try {
+      this.save(server, { stage: "hello", deadline, ipHash });
+      await this.scheduleAlarm(deadline);
+    } catch {
+      this.close(server, 1011, "session unavailable");
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -142,6 +146,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
+    this.alarmDeadline = Infinity;
     const now = Date.now();
     let next = this.expireHandshakes(now);
     this.ctx.storage.sql.exec("DELETE FROM lookup_budgets WHERE updated_at <= ?", now - LOOKUP_BUDGET_TTL_MS);
@@ -153,22 +158,34 @@ export class Hub extends DurableObject<Env> {
       else next = next === null ? deadline : Math.min(next, deadline);
     }
     if (expiry !== null) next = next === null ? expiry : Math.min(next, expiry);
-    this.alarmDeadline = next ?? Infinity;
-    if (next !== null) await this.ctx.storage.setAlarm(next);
+    if (next !== null) await this.scheduleAlarm(next);
   }
 
   /** Closes sockets still handshaking at `now` past their deadline; returns the earliest remaining deadline. */
   expireHandshakes(now: number): number | null {
     let next: number | null = null;
+    let expired = 0;
     for (const [ws, attachment] of this.sessions) {
       if (attachment.stage === "ready") continue;
-      if (attachment.deadline <= now) this.close(ws, Close.unauthorized, "handshake timeout");
-      else next = next === null ? attachment.deadline : Math.min(next, attachment.deadline);
+      if (attachment.deadline <= now) {
+        this.close(ws, Close.unauthorized, "handshake timeout");
+        expired++;
+      } else next = next === null ? attachment.deadline : Math.min(next, attachment.deadline);
     }
+    this.count("authentication_failed", expired);
     return next;
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    try {
+      await this.handleMessage(ws, message);
+    } catch {
+      this.close(ws, 1011, "session unavailable");
+    }
+  }
+
+  /** Processes a frame; the entry point closes the socket if a required state update fails. */
+  private async handleMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     let attachment = this.sessions.get(ws);
     if (!attachment) return;
     if (message === "ping") {
@@ -248,7 +265,10 @@ export class Hub extends DurableObject<Env> {
     }
     if (!this.sessions.has(ws)) return;
     if (!identity) return this.reject(ws);
-    if (deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
+    if (deadline <= Date.now()) {
+      this.count("authentication_failed");
+      return this.close(ws, Close.unauthorized, "handshake timeout");
+    }
     const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
     this.save(ws, {
       stage: "proof",
@@ -274,7 +294,10 @@ export class Hub extends DurableObject<Env> {
     const latest = await this.latestRelease(channel);
     if (!this.sessions.has(ws)) return;
     // The alarm skips sockets it can't see as handshaking, so a proof that outlived its deadline is refused here.
-    if (pending.deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
+    if (pending.deadline <= Date.now()) {
+      this.count("authentication_failed");
+      return this.close(ws, Close.unauthorized, "handshake timeout");
+    }
     if ((this.byXuid.get(xuid)?.size ?? 0) >= MAX_CONNECTIONS_PER_XUID) {
       this.count("admission_refused");
       return this.close(ws, Close.stayAway, `retry_after=${CONNECTION_RETRY_AFTER_S}`);
@@ -323,18 +346,28 @@ export class Hub extends DurableObject<Env> {
     send(ws, { type: "lookup_result", id: lookup.id, cinnabar: xuids.filter((xuid) => this.isVisible(xuid)) });
   }
 
-  /** Emits only a fixed event label and count; analytics never receives player or request data. */
-  private count(event: "admission_refused" | "authentication_failed" | "overload_closed" | "lookup"): void {
-    this.env.METRICS?.writeDataPoint({ blobs: [event], doubles: [1] });
+  /** Emits one point per counter per invocation; callers aggregate loops, and analytics failures are dropped. */
+  private count(event: "admission_refused" | "authentication_failed" | "overload_closed" | "lookup", value = 1): void {
+    if (value === 0) return;
+    try {
+      this.env.METRICS?.writeDataPoint({ blobs: [event], doubles: [value] });
+    } catch {
+      // Metrics must never interrupt admission, accounting, or socket cleanup.
+    }
   }
 
   /** Keeps the earliest alarm so handshake deadlines and budget expiry share one timer. */
   private async scheduleAlarm(deadline: number): Promise<void> {
     if (deadline >= this.alarmDeadline) return;
     this.alarmDeadline = deadline;
-    const current = await this.ctx.storage.getAlarm();
-    if (current !== null) this.alarmDeadline = Math.min(this.alarmDeadline, current);
-    if (current === null || this.alarmDeadline < current) await this.ctx.storage.setAlarm(this.alarmDeadline);
+    try {
+      const current = await this.ctx.storage.getAlarm();
+      if (current !== null) this.alarmDeadline = Math.min(this.alarmDeadline, current);
+      if (current === null || this.alarmDeadline < current) await this.ctx.storage.setAlarm(this.alarmDeadline);
+    } catch (error) {
+      this.alarmDeadline = Infinity;
+      throw error;
+    }
   }
 
   private isVisible(xuid: string): boolean {
@@ -349,12 +382,12 @@ export class Hub extends DurableObject<Env> {
   }
 
   private reject(ws: WebSocket): void {
+    this.count("authentication_failed");
     send(ws, { type: "error", code: "unauthorized" });
     this.close(ws, Close.unauthorized, "unauthorized");
   }
 
   private close(ws: WebSocket, code: number, reason: string): void {
-    if (code === Close.unauthorized) this.count("authentication_failed");
     this.forget(ws);
     try {
       ws.close(code, reason);
@@ -371,17 +404,15 @@ export class Hub extends DurableObject<Env> {
         startedAt: Date.now(), frames: 0, bytes: 0, rateLimited: 0,
       },
     };
-    if (attachment.stage === "ready") {
-      delete attachment.ipHash;
-      this.releasePendingIp(ws);
-    } else {
-      attachment.ipHash ??= this.sessions.get(ws)?.ipHash;
-      if (attachment.ipHash && !this.ipBySocket.has(ws)) {
-        this.ipBySocket.set(ws, attachment.ipHash);
-        this.pendingByIp.set(attachment.ipHash, (this.pendingByIp.get(attachment.ipHash) ?? 0) + 1);
-      }
-    }
+    if (attachment.stage === "ready") delete attachment.ipHash;
+    else attachment.ipHash ??= this.sessions.get(ws)?.ipHash;
     if (persist) ws.serializeAttachment(attachment);
+    if (attachment.stage === "ready") {
+      this.releasePendingIp(ws);
+    } else if (attachment.ipHash && !this.ipBySocket.has(ws)) {
+      this.ipBySocket.set(ws, attachment.ipHash);
+      this.pendingByIp.set(attachment.ipHash, (this.pendingByIp.get(attachment.ipHash) ?? 0) + 1);
+    }
     this.sessions.set(ws, attachment);
     if (attachment.stage === "ready") {
       index(this.byXuid, attachment.xuid, ws);

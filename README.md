@@ -56,7 +56,9 @@ The text frame `ping` gets `pong` without waking the Hub.
 - Server addresses are not sent, but submitted roster XUIDs can reveal who shares a server.
   Player data is not logged. Analytics Engine receives only fixed event labels and counts for
   admission refusals, authentication failures, overload closes and lookups, with no identifiers
-  or payloads. Workers observability remains off so invocation logs do not record request metadata.
+  or payloads. Counts are aggregated per invocation; failed metric writes are dropped without
+  affecting admission or cleanup. Workers observability remains off so invocation logs do not
+  record request metadata.
 
 ## Development
 
