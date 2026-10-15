@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHANNELS, compareVersions, decodeClientMessage } from "../src/protocol";
+import { CHANNELS, Close, compareVersions, decodeClientMessage, isReleaseHookRequest } from "../src/protocol";
 
 describe("versions", () => {
   it.each([
@@ -42,5 +42,29 @@ describe("decoding", () => {
     const hello = { type: "hello", client_version: "0.1.18", channel: "beta", visible: true, token: "a.b.c" };
     expect(decodeClientMessage(JSON.stringify({ ...hello, protocol: 1 })).kind).toBe("message");
     expect(decodeClientMessage(JSON.stringify({ ...hello, protocol: 2 })).kind).toBe("invalid");
+  });
+});
+
+
+describe("v1 additions", () => {
+  it("accepts optional nonnegative integer client builds and rejects invalid builds", () => {
+    const hello = { type: "hello", protocol: 1, client_version: "0.1.18", channel: "beta", visible: true, token: "a.b.c" };
+    for (const client_build of [undefined, 0, 123]) {
+      expect(decodeClientMessage(JSON.stringify({ ...hello, client_build })).kind).toBe("message");
+    }
+    for (const client_build of [-1, 1.5, "123", null]) {
+      expect(decodeClientMessage(JSON.stringify({ ...hello, client_build })).kind).toBe("invalid");
+    }
+  });
+
+  it("accepts optional release builds and rejects invalid builds", () => {
+    const record = { channel: "nightly", version: "0.2.0" };
+    expect(isReleaseHookRequest(record)).toBe(true);
+    expect(isReleaseHookRequest({ ...record, build: 123 })).toBe(true);
+    for (const build of [-1, 1.5, "123", null]) expect(isReleaseHookRequest({ ...record, build })).toBe(false);
+  });
+
+  it("defines the stay-away close code", () => {
+    expect(Close.stayAway).toBe(4429);
   });
 });

@@ -3,15 +3,36 @@ import schemaJson from "../schema/v1.json";
 
 const schema = schemaJson as unknown as Schema & { $id: string; $defs: { Channel: { enum: string[] } } };
 
+/** Operational defaults advertised to clients; schema defaults define their values. */
+export const SERVER_PARAMETERS = Object.fromEntries(
+  Object.entries(schemaJson.$defs.Welcome.properties)
+    .filter(([, property]) => "default" in property)
+    .map(([name, property]) => [name, (property as { default: number }).default]),
+) as Required<WelcomeParameters>;
+
+export interface WelcomeParameters {
+  lookup_batch_max?: number;
+  lookup_bucket_capacity?: number;
+  lookup_refill_per_min?: number;
+  cache_ttl_ms?: number;
+  ping_interval_ms?: number;
+  reconnect_max_ms?: number;
+}
+
 export const PROTOCOL = 1;
 export const MAX_FRAME_BYTES = 16 * 1024;
+export const FLOOD_WINDOW_MS = 10_000;
+export const FLOOD_FRAME_MAX = 30;
+export const FLOOD_BYTE_MAX = 64 * 1024;
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
 export const MAX_CONNECTIONS = 20_000;
 export const MAX_CONNECTIONS_PER_IP = 8;
 export const CONNECTION_RETRY_AFTER_S = 10;
 export const JWKS_REFETCH_INTERVAL_MS = 60_000;
-export const LOOKUP_RATE_LIMIT = 20;
-export const LOOKUP_RATE_WINDOW_MS = 60_000;
+export const MAX_CONNECTIONS_PER_XUID = 4;
+export const PRESENCE_LINGER_MS = 30 * 60_000;
+export const LOOKUP_BUDGET_TTL_MS = 300_000;
+export const RATE_LIMITED_REPLY_MAX = 3;
 export const PROOF_CONTEXT = "cinnabar-api/v1/auth:";
 
 /** WebSocket close codes the server uses. */
@@ -20,6 +41,7 @@ export const Close = {
   policyViolation: 1008,
   tooBig: 1009,
   unauthorized: 4401,
+  stayAway: 4429,
 } as const;
 
 export type Channel = "stable" | "beta" | "nightly";
@@ -29,6 +51,7 @@ export interface Hello {
   type: "hello";
   protocol: 1;
   client_version: string;
+  client_build?: number;
   channel: Channel;
   visible: boolean;
   token: string;
@@ -49,16 +72,18 @@ export interface Lookup {
 export interface ReleaseRecord {
   channel: Channel;
   version: string;
+  build?: number;
   published_at: string;
 }
 export interface ReleaseHookRequest {
   channel: Channel;
   version: string;
+  build?: number;
 }
 
 export type ServerMessage =
   | { type: "challenge"; nonce: string }
-  | { type: "welcome"; xuid: string; display_name: string }
+  | ({ type: "welcome"; xuid: string } & WelcomeParameters)
   | { type: "error"; code: "unauthorized" }
   | { type: "error"; code: "rate_limited"; id: number }
   | { type: "lookup_result"; id: number; cinnabar: string[] }

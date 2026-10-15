@@ -1,7 +1,7 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { Hub, admitLookup } from "../src/hub";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { Hub } from "../src/hub";
 import { hub, installFakeIssuer, login, postRelease, type Client } from "./helpers";
 
 const open: Client[] = [];
@@ -43,17 +43,51 @@ describe("visibility and lookup", () => {
     expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
     shown.close();
     await shown.closed;
-    expect((await me.lookup([ALEX])).cinnabar).toEqual([]);
+    expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
     hidden.send({ type: "visibility", visible: true });
     expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
   });
 
-  it("drops a player once their last connection closes", async () => {
+  it("lingers for thirty minutes after the last connection closes", async () => {
     const { client: me } = await player();
     const { client: alex } = await player({ xuid: ALEX });
     expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
     alex.close();
     await alex.closed;
+    expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
+    await runInDurableObject(hub(), async (instance: Hub, state) => {
+      const ws = state.getWebSockets().find((ws) => ws.deserializeAttachment()?.stage === "ready")!;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30 * 60_000 + 1);
+      try {
+        await instance.webSocketMessage(ws, JSON.stringify({ type: "lookup", id: 8, xuids: [ALEX] }));
+      } finally {
+        clock.mockRestore();
+      }
+    });
+    expect(await me.next()).toEqual({ type: "lookup_result", id: 8, cinnabar: [] });
+  });
+
+  it("clears retained presence when an account reconnects with visibility off", async () => {
+    const { client: me } = await player();
+    const { client: alex } = await player({ xuid: "2535400000000999" });
+    alex.close();
+    await alex.closed;
+    expect((await me.lookup(["2535400000000999"])).cinnabar).toEqual(["2535400000000999"]);
+    await player({ xuid: "2535400000000999", visible: false });
+    expect((await me.lookup(["2535400000000999"])).cinnabar).toEqual([]);
+  });
+
+  it("removes linger immediately on visibility off, even when already hidden", async () => {
+    const { client: me } = await player();
+    const { client: alex } = await player({ xuid: ALEX });
+    const { client: hidden } = await player({ xuid: ALEX, visible: false });
+    alex.close();
+    await alex.closed;
+    expect((await me.lookup([ALEX])).cinnabar).toEqual([ALEX]);
+    hidden.send({ type: "visibility", visible: false });
+    expect((await me.lookup([ALEX])).cinnabar).toEqual([]);
+    hidden.close();
+    await hidden.closed;
     expect((await me.lookup([ALEX])).cinnabar).toEqual([]);
   });
 
@@ -102,23 +136,7 @@ describe("lookup limits", () => {
     expect((await client.closed).code).toBe(1008);
   });
 
-  it("allows 20 lookups per connection, then answers rate_limited with the lookup id", async () => {
-    const { client } = await player();
-    for (let id = 0; id < 20; id++) expect((await client.lookup([], id)).type).toBe("lookup_result");
-    expect(await client.lookup([], 4294967295)).toEqual({ type: "error", code: "rate_limited", id: 4294967295 });
-    const { client: other } = await player();
-    expect((await other.lookup([])).type).toBe("lookup_result");
-  });
 
-  it("rolls the window: a lookup is admitted again a minute after the oldest", () => {
-    let lookups: number[] = [];
-    for (let i = 0; i < 20; i++) lookups = admitLookup(lookups, 1_000 + i * 100).lookups;
-    expect(admitLookup(lookups, 60_999).admitted).toBe(false);
-    const next = admitLookup(lookups, 61_000);
-    expect(next.admitted).toBe(true);
-    expect(next.lookups).toHaveLength(20);
-    expect(admitLookup(next.lookups, 61_050).admitted).toBe(false);
-  });
 });
 
 describe("release push", () => {

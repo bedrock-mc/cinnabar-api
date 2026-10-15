@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { isChannel, isReleaseHookRequest } from "./protocol";
+import { isReleaseHookRequest } from "./protocol";
 import { hubFor } from "./routing";
 
 export { Hub } from "./hub";
@@ -9,13 +9,6 @@ const MAX_HOOK_BODY_BYTES = 1024;
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
-
-app.get("/v1/releases/latest", async (c) => {
-  const channel = c.req.query("channel");
-  if (!isChannel(channel)) return c.body(null, 400);
-  const record = await hubFor(c.env).latestRelease(channel);
-  return record ? c.json(record) : c.body(null, 404);
-});
 
 app.post("/v1/releases", async (c) => {
   if (!(await bearerMatches(c.req.header("Authorization"), c.env.RELEASE_HOOK_SECRET))) return c.body(null, 401);
@@ -30,7 +23,7 @@ app.post("/v1/releases", async (c) => {
     return c.body(null, 400);
   }
   if (!isReleaseHookRequest(body)) return c.body(null, 400);
-  await hubFor(c.env).recordRelease(body.channel, body.version);
+  await hubFor(c.env).recordRelease(body.channel, body.version, body.build);
   return c.body(null, 204);
 });
 

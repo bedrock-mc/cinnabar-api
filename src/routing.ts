@@ -1,6 +1,6 @@
 import type { Hub } from "./hub";
 
-/** Returns the Hub that owns presence and releases; sharding the Hub only changes this function. */
+/** Returns the shared presence and release hub. Sharding also needs global lookups and release fan-out. */
 export function hubFor(env: Env): DurableObjectStub<Hub> {
-  return env.HUB.get(env.HUB.idFromName("global"));
+  return env.HUB.get(env.HUB.idFromName("global"), { locationHint: "weur" });
 }
