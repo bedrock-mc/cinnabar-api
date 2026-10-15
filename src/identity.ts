@@ -15,6 +15,15 @@ export interface Identity {
   cpk: string; // base64 SPKI DER of the token's P-384 key
 }
 
+/** Derives the multiplayer identity UUID from the verified XUID using the v3 MD5 format. */
+export async function identityUuid(xuid: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest("MD5", new TextEncoder().encode(`pocket-auth-1-xuid:${xuid}`)));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x30;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Thrown when the issuer's discovery document or keys can't be fetched; not the client's fault. */
 export class IssuerUnavailable extends Error {}
 

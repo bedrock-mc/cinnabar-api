@@ -23,6 +23,28 @@ describe("versions", () => {
 });
 
 describe("decoding", () => {
+  const uuid = "058728db-7a88-3a63-af82-7174a02a2e35";
+
+  it.each([
+    {}, { xuids: [] }, { uuids: [] }, { xuids: [], uuids: [] },
+    { xuids: ["1"] }, { uuids: [uuid] }, { xuids: [], uuids: [uuid] },
+    { xuids: ["1"], uuids: [] }, { xuids: ["1"], uuids: [uuid] },
+    { xuids: Array(64).fill("1"), uuids: Array(64).fill(uuid) },
+    { uuids: Array(128).fill(uuid) },
+  ])("accepts lookup identifiers %#", (identifiers) => {
+    expect(decodeClientMessage(JSON.stringify({ type: "lookup", id: 1, ...identifiers })).kind).toBe("message");
+  });
+
+  it.each([
+    { uuids: [uuid.toUpperCase()] }, { uuids: [uuid.replaceAll("-", "")] },
+    { uuids: [uuid.replace("0", "g")] }, { uuids: [""] }, { uuids: [1] },
+    { xuids: ["1"], uuids: null }, { xuids: null, uuids: [uuid] },
+    { xuids: Array(64).fill("1"), uuids: Array(65).fill(uuid) },
+    { uuids: Array(129).fill(uuid) },
+  ])("rejects invalid lookup identifiers %#", (identifiers) => {
+    expect(decodeClientMessage(JSON.stringify({ type: "lookup", id: 1, ...identifiers })).kind).toBe("invalid");
+  });
+
   it("reads the channel enum from the schema", () => {
     expect(CHANNELS).toEqual(["stable", "beta", "nightly"]);
   });
