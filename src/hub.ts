@@ -2,9 +2,12 @@ import { DurableObject } from "cloudflare:workers";
 import { IssuerUnavailable, encodeBase64Url, issuerKeys, verifyProof } from "./identity";
 import {
   Close,
+  CONNECTION_RETRY_AFTER_S,
   HANDSHAKE_TIMEOUT_MS,
   LOOKUP_RATE_LIMIT,
   LOOKUP_RATE_WINDOW_MS,
+  MAX_CONNECTIONS,
+  MAX_CONNECTIONS_PER_IP,
   MAX_FRAME_BYTES,
   compareVersions,
   decodeClientMessage,
@@ -48,6 +51,10 @@ export class Hub extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, Attachment>();
   private readonly byXuid = new Map<string, Set<WebSocket>>();
   private readonly byChannel = new Map<Channel, Set<WebSocket>>();
+  // Never attach IP-derived data to sockets: these indexes and their salt reset on hibernation.
+  private readonly ipSalt = crypto.randomUUID();
+  private readonly ipBySocket = new WeakMap<WebSocket, string>();
+  private readonly byIp = new Map<string, Set<WebSocket>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -65,12 +72,25 @@ export class Hub extends DurableObject<Env> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response(null, { status: 426, headers: { Upgrade: "websocket" } });
     }
+    const ipHash = await this.hashIp(request.headers.get("CF-Connecting-IP") ?? "");
+    // No await between checking the caps and recording the accepted socket.
+    if (this.sessions.size >= MAX_CONNECTIONS || (this.byIp.get(ipHash)?.size ?? 0) >= MAX_CONNECTIONS_PER_IP) {
+      return new Response(null, { status: 429, headers: { "Retry-After": String(CONNECTION_RETRY_AFTER_S) } });
+    }
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
     this.save(server, { stage: "hello", deadline });
+    this.ipBySocket.set(server, ipHash);
+    index(this.byIp, ipHash, server);
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(deadline);
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Hashes an IP with this Hub lifetime's random salt; the raw IP is never retained. */
+  private async hashIp(ip: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${this.ipSalt}:${ip}`));
+    return encodeBase64Url(new Uint8Array(digest));
   }
 
   /** Records `version` as the channel's latest release and pushes it to that channel's authenticated sockets. */
@@ -237,6 +257,11 @@ export class Hub extends DurableObject<Env> {
   private forget(ws: WebSocket): void {
     const attachment = this.sessions.get(ws);
     this.sessions.delete(ws);
+    const ipHash = this.ipBySocket.get(ws);
+    if (ipHash !== undefined) {
+      this.ipBySocket.delete(ws);
+      unindex(this.byIp, ipHash, ws);
+    }
     try {
       ws.serializeAttachment(CLOSED);
     } catch {

@@ -18,13 +18,21 @@ Close codes: `4401` failed or timed-out authentication, `1009` frame over 16 KiB
 that isn't a JSON object with a `type`, `1008` known message failing the schema or a binary frame, `1011` issuer
 unreachable. Unknown message types and fields are ignored. The text frame `ping` gets `pong`.
 
+- Connections: at most 20,000 per Hub and 8 per IP since the last wake; excess upgrades receive HTTP 429 with `Retry-After: 10`.
+- Issuer keys: cached for an hour, with at most one refresh attempt per 60 s, including unknown `kid`s and failures.
+
 ## Privacy
 
 - Per live connection, in memory only: XUID, visibility, channel, and lookup timestamps for rate
   limiting. Gone when the connection closes. During the handshake (at most 10 s) the connection
   also holds the nonce, the token's display name and public key, and the client version.
 - Durable storage holds release records only: channel, version, published_at.
-- Tokens, IPs, server addresses and lookup contents are never stored, and nothing about players
+- IP limits hold a salted SHA-256 IP hash per counted socket and the sockets grouped by that hash,
+  only in Hub memory until each socket is forgotten or the Hub hibernates, whichever comes first.
+  A fresh random salt is created on each wake; IP counts reset and existing sockets are not counted
+  toward the per-IP cap after hibernation. Raw IPs are used only to compute the hash during admission;
+  neither IPs nor hashes are written to storage, socket attachments, or tags.
+- Tokens, raw IPs, server addresses and lookup contents are never stored, and nothing about players
   is logged. Workers observability is off so invocation logs don't record request metadata.
 
 ## Development
