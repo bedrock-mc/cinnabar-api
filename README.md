@@ -10,31 +10,55 @@ messages against it.
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | `{"ok":true,"api":"v1"}` |
-| `GET /v1/releases/latest?channel=stable\|beta\|nightly` | Latest recorded release, `404` if none. Informational; clients verify the signed GitHub manifest. |
-| `POST /v1/releases` | Release hook. `Authorization: Bearer <RELEASE_HOOK_SECRET>`, body `{"channel","version"}`; records the release and pushes it to clients on that channel. |
-| `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs are visible Cinnabar players, and receives release pushes. |
+| `POST /v1/releases` | Release hook. `Authorization: Bearer <RELEASE_HOOK_SECRET>`, body `{"channel","version","build"}`; records and broadcasts only a newer (version, build) pair. Repeats and older records are no-ops. Omitted v1 builds mean zero. |
+| `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs recently used Cinnabar, and receives release pushes. |
 
 Close codes: `4401` failed or timed-out authentication, `1009` frame over 16 KiB, `1007` frame
-that isn't a JSON object with a `type`, `1008` known message failing the schema or a binary frame, `1011` issuer
-unreachable. Unknown message types and fields are ignored. The text frame `ping` gets `pong`.
+that isn't a JSON object with a `type`, `1008` invalid messages, binary frames, flood control or
+repeated lookup rate limiting, and `1011` issuer unreachable. `4429` means stay away: its reason
+is `retry_after=<seconds>`. Clients wait at least that long plus jitter before reconnecting,
+and honour HTTP 429 `Retry-After` on dial. Unknown fields are ignored; unknown message types
+are ignored after authentication. During the handshake only the expected message is accepted.
+The text frame `ping` gets `pong` without waking the Hub.
 
-- Connections: at most 20,000 per Hub and 8 per IP since the last wake, including sockets still closing; excess upgrades receive HTTP 429 with `Retry-After: 10`.
-- Issuer keys: cached for an hour, with at most one refresh attempt per 60 s, including unknown `kid`s and failures.
+- Connections: at most 20,000 per Hub, including closing sockets; at most 8 pending handshakes
+  per IPv4 address or IPv6 /64, and at most 4 ready sockets per XUID. Ready sockets do not count
+  toward the IP cap. Excess upgrades receive HTTP 429 with `Retry-After: 10`; excess account
+  sockets close with `4429` and `retry_after=10`.
+- Flood control: at most 30 non-ping frames and 64 KiB of text in each 10-second socket window,
+  including hello and proof. After 3 refused lookups, the socket closes with `1008`.
+- Lookups: batches of at most 128 XUIDs share an account bucket of 1,024 tokens, refilling
+  512 per minute. Each unique requested XUID costs one token, including negative answers.
+  Reconnecting or opening another socket does not reset the bucket.
+- Welcome advertises `lookup_batch_max`, `lookup_bucket_capacity`, `lookup_refill_per_min`,
+  `cache_ttl_ms` (120,000), `ping_interval_ms` (30,000), and `reconnect_max_ms` (300,000).
+  These fields and `hello.client_build` are optional in v1. Catch-up compares version, then build.
+  Release messages are hints; clients still verify the signed update manifest.
+- Issuer keys: cached for an hour, with at most one refresh attempt per 60 s, including unknown `kid`s
+  and failures. Sessions remain authenticated after the original token expires.
 
 ## Privacy
 
-- Per live connection, in memory only: XUID, visibility, channel, and lookup timestamps for rate
-  limiting. Gone when the connection closes. During the handshake (at most 10 s) the connection
-  also holds the nonce, the token's display name and public key, and the client version.
-- Durable storage holds release records only: channel, version, published_at.
-- IP limits hold a salted SHA-256 IP hash per counted socket, only in Hub memory until its close
-  or error callback, or until the Hub hibernates, whichever comes first. Closing sockets continue
-  to count against the caps while the platform reports them as attached.
-  A fresh random salt is created on each wake; IP counts reset and existing sockets are not counted
-  toward the per-IP cap after hibernation. Raw IPs are used only to compute the hash during admission;
-  neither IPs nor hashes are written to storage, socket attachments, or tags.
-- Tokens, raw IPs, server addresses and lookup contents are never stored, and nothing about players
-  is logged. Workers observability is off so invocation logs don't record request metadata.
+- Lookups answer “uses Cinnabar,” rather than providing an exact online status. Visible accounts
+  linger in Hub memory for `PRESENCE_LINGER_MS` (30 minutes) after their last socket closes.
+  Visibility off clears retained presence immediately; another visible socket can still make
+  the account visible. Linger is best effort and is lost when the Hub hibernates or restarts.
+- Connection attachments survive hibernation and hold the XUID, visibility, channel, and socket
+  flood counters. Handshakes (at most 10 s) temporarily hold the nonce, public key, client version
+  and build. Display names and tokens are not stored in attachments or sent in welcome.
+- Account lookup budgets survive reconnects and hibernation in Durable Object storage. Each
+  record holds only an XUID, remaining token count and refill timestamp; an alarm removes records
+  unused for five minutes. Requested rosters and lookup results are not retained.
+- Durable storage also holds release records (channel, version, build, published_at) and a random
+  admission-hash salt. Pending handshake attachments contain a salted hash of their IPv4 address
+  or IPv6 /64, removed on authentication or close. In-memory counters rebuild from these hashes
+  on wake. Raw IP addresses are used only to compute the hash during admission.
+- Server addresses are not sent, but submitted roster XUIDs can reveal who shares a server.
+  Player data is not logged. Analytics Engine receives only fixed event labels and counts for
+  admission refusals, authentication failures, overload closes and lookups, with no identifiers
+  or payloads. Counts are aggregated per invocation; failed metric writes are dropped without
+  affecting admission or cleanup. Workers observability remains off so invocation logs do not
+  record request metadata.
 
 ## Development
 

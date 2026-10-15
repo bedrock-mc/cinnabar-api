@@ -2,10 +2,16 @@ import { DurableObject } from "cloudflare:workers";
 import { IssuerUnavailable, encodeBase64Url, issuerKeys, verifyProof } from "./identity";
 import {
   Close,
+  SERVER_PARAMETERS,
   CONNECTION_RETRY_AFTER_S,
+  FLOOD_WINDOW_MS,
+  FLOOD_FRAME_MAX,
+  FLOOD_BYTE_MAX,
   HANDSHAKE_TIMEOUT_MS,
-  LOOKUP_RATE_LIMIT,
-  LOOKUP_RATE_WINDOW_MS,
+  MAX_CONNECTIONS_PER_XUID,
+  LOOKUP_BUDGET_TTL_MS,
+  RATE_LIMITED_REPLY_MAX,
+  PRESENCE_LINGER_MS,
   MAX_CONNECTIONS,
   MAX_CONNECTIONS_PER_IP,
   MAX_FRAME_BYTES,
@@ -20,7 +26,7 @@ import {
 } from "./protocol";
 
 /** Per-socket state, persisted with serializeAttachment so it survives hibernation. */
-type Attachment =
+type Session =
   | { stage: "hello"; deadline: number }
   | { stage: "verifying"; deadline: number }
   | {
@@ -28,14 +34,22 @@ type Attachment =
       deadline: number;
       nonce: string;
       xuid: string;
-      displayName: string;
       cpk: string;
       clientVersion: string;
+      clientBuild?: number;
       channel: Channel;
       visible: boolean;
     }
-  | { stage: "ready"; xuid: string; channel: Channel; visible: boolean; lookups: number[] };
+  | { stage: "ready"; xuid: string; channel: Channel; visible: boolean };
 
+interface Traffic {
+  startedAt: number;
+  frames: number;
+  bytes: number;
+  rateLimited: number;
+}
+
+type Attachment = Session & { traffic: Traffic; ipHash?: string };
 type Ready = Extract<Attachment, { stage: "ready" }>;
 
 /** Written over a forgotten socket's attachment so a wake before the close completes doesn't restore it. */
@@ -50,15 +64,25 @@ const releaseKey = (channel: Channel) => `release:${channel}`;
 export class Hub extends DurableObject<Env> {
   private readonly sessions = new Map<WebSocket, Attachment>();
   private readonly byXuid = new Map<string, Set<WebSocket>>();
+  private readonly linger = new Map<string, number>();
   private readonly byChannel = new Map<Channel, Set<WebSocket>>();
-  // Never attach IP-derived data to sockets: these hashes and their salt reset on hibernation.
-  private readonly ipSalt = crypto.randomUUID();
-  private readonly ipBySocket = new WeakMap<WebSocket, string>();
+  private readonly sockets = new Set<WebSocket>();
+  private readonly pendingByIp = new Map<string, number>();
+  private readonly ipBySocket = new Map<WebSocket, string>();
+  private readonly ipSalt: string;
+  private alarmDeadline = Infinity;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lookup_budgets (
+      xuid TEXT PRIMARY KEY, tokens REAL NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS hub_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO hub_config (key, value) VALUES ('ip_salt', ?)", crypto.randomUUID());
+    this.ipSalt = ctx.storage.sql.exec<{ value: string }>("SELECT value FROM hub_config WHERE key = 'ip_salt'").one().value;
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     for (const ws of ctx.getWebSockets()) {
+      this.sockets.add(ws);
       const attachment = ws.deserializeAttachment() as Attachment | typeof CLOSED | null;
       // Handshaking sockets are restored too, so the alarm still closes them at their deadline.
       if (attachment && attachment.stage !== "closed" && ws.readyState === WebSocket.OPEN) {
@@ -73,34 +97,47 @@ export class Hub extends DurableObject<Env> {
     }
     const ipHash = await this.hashIp(request.headers.get("CF-Connecting-IP") ?? "");
     // Include closing sockets until the platform drops them, independently of authentication and presence.
-    const sockets = this.ctx.getWebSockets();
-    // No await between checking the caps and recording the accepted socket.
+    // No await between checking the counters and recording the accepted socket.
     if (
-      sockets.length >= MAX_CONNECTIONS ||
-      sockets.filter((ws) => this.ipBySocket.get(ws) === ipHash).length >= MAX_CONNECTIONS_PER_IP
+      this.sockets.size >= MAX_CONNECTIONS ||
+      (this.pendingByIp.get(ipHash) ?? 0) >= MAX_CONNECTIONS_PER_IP
     ) {
+      this.count("admission_refused");
       return new Response(null, { status: 429, headers: { "Retry-After": String(CONNECTION_RETRY_AFTER_S) } });
     }
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
-    this.save(server, { stage: "hello", deadline });
-    this.ipBySocket.set(server, ipHash);
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(deadline);
+    this.sockets.add(server);
+    try {
+      this.save(server, { stage: "hello", deadline, ipHash });
+      await this.scheduleAlarm(deadline);
+    } catch {
+      this.close(server, 1011, "session unavailable");
+    }
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Hashes an IP with this Hub lifetime's random salt; the raw IP is never retained. */
+  /** Hashes the admission bucket with a hub-specific salt; raw addresses are never retained. */
   private async hashIp(ip: string): Promise<string> {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${this.ipSalt}:${ip}`));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${this.ipSalt}:${admissionIpBucket(ip)}`));
     return encodeBase64Url(new Uint8Array(digest));
   }
 
-  /** Records `version` as the channel's latest release and pushes it to that channel's authenticated sockets. */
-  async recordRelease(channel: Channel, version: string): Promise<ReleaseRecord> {
-    const record: ReleaseRecord = { channel, version, published_at: new Date(Date.now()).toISOString() };
-    await this.ctx.storage.put(releaseKey(channel), record);
-    for (const ws of this.byChannel.get(channel) ?? []) send(ws, { type: "release", ...record });
+  /** Stores and broadcasts only a newer (version, build) identity; omitted v1 builds mean zero. */
+  async recordRelease(channel: Channel, version: string, build = 0): Promise<ReleaseRecord> {
+    const { record, newer } = await this.ctx.storage.transaction(async (txn) => {
+      const previous = await txn.get<ReleaseRecord>(releaseKey(channel));
+      if (previous && compareReleases(version, build, previous.version, previous.build) <= 0) {
+        return { record: previous, newer: false };
+      }
+      const record: ReleaseRecord = { channel, version, build, published_at: new Date(Date.now()).toISOString() };
+      await txn.put(releaseKey(channel), record);
+      return { record, newer: true };
+    });
+    if (newer) {
+      for (const ws of this.byChannel.get(channel) ?? []) send(ws, { type: "release", ...record });
+    }
     return record;
   }
 
@@ -109,40 +146,84 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
-    const next = this.expireHandshakes(Date.now());
-    if (next !== null) await this.ctx.storage.setAlarm(next);
+    this.alarmDeadline = Infinity;
+    const now = Date.now();
+    let next = this.expireHandshakes(now);
+    this.ctx.storage.sql.exec("DELETE FROM lookup_budgets WHERE updated_at <= ?", now - LOOKUP_BUDGET_TTL_MS);
+    const expiry = this.ctx.storage.sql.exec<{ expiry: number | null }>(
+      "SELECT MIN(updated_at) + ? AS expiry FROM lookup_budgets", LOOKUP_BUDGET_TTL_MS,
+    ).one().expiry;
+    for (const [xuid, deadline] of this.linger) {
+      if (deadline <= now) this.linger.delete(xuid);
+      else next = next === null ? deadline : Math.min(next, deadline);
+    }
+    if (expiry !== null) next = next === null ? expiry : Math.min(next, expiry);
+    if (next !== null) await this.scheduleAlarm(next);
   }
 
   /** Closes sockets still handshaking at `now` past their deadline; returns the earliest remaining deadline. */
   expireHandshakes(now: number): number | null {
     let next: number | null = null;
+    let expired = 0;
     for (const [ws, attachment] of this.sessions) {
       if (attachment.stage === "ready") continue;
-      if (attachment.deadline <= now) this.close(ws, Close.unauthorized, "handshake timeout");
-      else next = next === null ? attachment.deadline : Math.min(next, attachment.deadline);
+      if (attachment.deadline <= now) {
+        this.close(ws, Close.unauthorized, "handshake timeout");
+        expired++;
+      } else next = next === null ? attachment.deadline : Math.min(next, attachment.deadline);
     }
+    this.count("authentication_failed", expired);
     return next;
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const attachment = this.sessions.get(ws);
+    try {
+      await this.handleMessage(ws, message);
+    } catch {
+      this.close(ws, 1011, "session unavailable");
+    }
+  }
+
+  /** Processes a frame; the entry point closes the socket if a required state update fails. */
+  private async handleMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    let attachment = this.sessions.get(ws);
     if (!attachment) return;
+    if (message === "ping") {
+      try {
+        ws.send("pong");
+      } catch {
+        // The peer is closing.
+      }
+      return;
+    }
     if (typeof message !== "string") {
       if (message.byteLength > MAX_FRAME_BYTES) this.close(ws, Close.tooBig, "frame too large");
       else this.close(ws, Close.policyViolation, "text frames only");
       return;
     }
     if (exceedsFrameLimit(message)) return this.close(ws, Close.tooBig, "frame too large");
+    const now = Date.now();
+    const previous = attachment.traffic;
+    const traffic: Traffic = now - previous.startedAt >= FLOOD_WINDOW_MS
+      ? { startedAt: now, frames: 0, bytes: 0, rateLimited: previous.rateLimited }
+      : { ...previous };
+    traffic.frames++;
+    traffic.bytes += new TextEncoder().encode(message).byteLength;
+    if (traffic.frames > FLOOD_FRAME_MAX || traffic.bytes > FLOOD_BYTE_MAX) {
+      this.count("overload_closed");
+      return this.close(ws, Close.policyViolation, "message budget exceeded");
+    }
+    attachment = { ...attachment, traffic };
+    this.save(ws, attachment);
     const decoded = decodeClientMessage(message);
     switch (decoded.kind) {
       case "unknown":
-        return;
+        return attachment.stage === "ready" ? undefined : this.reject(ws);
       case "malformed":
         return this.close(ws, Close.invalidPayload, "malformed message");
       case "invalid":
         return this.close(ws, Close.policyViolation, "invalid message");
     }
-    const now = Date.now();
     const msg: ClientMessage = decoded.message;
     switch (attachment.stage) {
       case "hello":
@@ -159,7 +240,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    this.ipBySocket.delete(ws);
+    this.sockets.delete(ws);
     this.forget(ws);
     try {
       ws.close(code, reason);
@@ -169,7 +250,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
-    this.ipBySocket.delete(ws);
+    this.sockets.delete(ws);
     this.forget(ws);
   }
 
@@ -184,16 +265,19 @@ export class Hub extends DurableObject<Env> {
     }
     if (!this.sessions.has(ws)) return;
     if (!identity) return this.reject(ws);
-    if (deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
+    if (deadline <= Date.now()) {
+      this.count("authentication_failed");
+      return this.close(ws, Close.unauthorized, "handshake timeout");
+    }
     const nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
     this.save(ws, {
       stage: "proof",
       deadline,
       nonce,
       xuid: identity.xuid,
-      displayName: identity.displayName,
       cpk: identity.cpk,
       clientVersion: hello.client_version,
+      clientBuild: hello.client_build,
       channel: hello.channel,
       visible: hello.visible,
     });
@@ -210,22 +294,80 @@ export class Hub extends DurableObject<Env> {
     const latest = await this.latestRelease(channel);
     if (!this.sessions.has(ws)) return;
     // The alarm skips sockets it can't see as handshaking, so a proof that outlived its deadline is refused here.
-    if (pending.deadline <= Date.now()) return this.close(ws, Close.unauthorized, "handshake timeout");
-    this.save(ws, { stage: "ready", xuid, channel, visible, lookups: [] });
-    send(ws, { type: "welcome", xuid, display_name: pending.displayName });
-    if (latest && compareVersions(latest.version, pending.clientVersion) > 0) send(ws, { type: "release", ...latest });
+    if (pending.deadline <= Date.now()) {
+      this.count("authentication_failed");
+      return this.close(ws, Close.unauthorized, "handshake timeout");
+    }
+    if ((this.byXuid.get(xuid)?.size ?? 0) >= MAX_CONNECTIONS_PER_XUID) {
+      this.count("admission_refused");
+      return this.close(ws, Close.stayAway, `retry_after=${CONNECTION_RETRY_AFTER_S}`);
+    }
+    if (!visible) this.linger.delete(xuid);
+    this.save(ws, { stage: "ready", xuid, channel, visible });
+    send(ws, { type: "welcome", xuid, ...SERVER_PARAMETERS });
+    if (latest && compareReleases(latest.version, latest.build, pending.clientVersion, pending.clientBuild) > 0) {
+      send(ws, { type: "release", ...latest });
+    }
   }
 
+  /** Changes this socket's visibility and immediately clears any retained presence on opt-out. */
   private onVisibility(ws: WebSocket, state: Ready, visible: boolean): void {
+    if (!visible) this.linger.delete(state.xuid);
     if (state.visible !== visible) this.save(ws, { ...state, visible });
   }
 
+  /** Charges unique requested XUIDs to the account's durable token bucket before answering. */
   private onLookup(ws: WebSocket, state: Ready, lookup: Lookup, now: number): void {
-    const { admitted, lookups } = admitLookup(state.lookups, now);
-    this.save(ws, { ...state, lookups });
-    if (!admitted) return send(ws, { type: "error", code: "rate_limited", id: lookup.id });
-    const cinnabar = [...new Set(lookup.xuids)].filter((xuid) => this.isVisible(xuid));
-    send(ws, { type: "lookup_result", id: lookup.id, cinnabar });
+    this.count("lookup");
+    const xuids = [...new Set(lookup.xuids)];
+    const bucket = this.ctx.storage.sql.exec<{ tokens: number; updated_at: number }>(
+      "SELECT tokens, updated_at FROM lookup_budgets WHERE xuid = ?", state.xuid,
+    ).toArray()[0];
+    const capacity = SERVER_PARAMETERS.lookup_bucket_capacity;
+    const tokens = bucket
+      ? Math.min(capacity, bucket.tokens + Math.max(0, now - bucket.updated_at) * SERVER_PARAMETERS.lookup_refill_per_min / 60_000)
+      : capacity;
+    const admitted = tokens >= xuids.length;
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO lookup_budgets (xuid, tokens, updated_at) VALUES (?, ?, ?)",
+      state.xuid, admitted ? tokens - xuids.length : tokens, now,
+    );
+    this.ctx.waitUntil(this.scheduleAlarm(now + LOOKUP_BUDGET_TTL_MS));
+    if (!admitted) {
+      const traffic = { ...state.traffic, rateLimited: state.traffic.rateLimited + 1 };
+      this.save(ws, { ...state, traffic });
+      send(ws, { type: "error", code: "rate_limited", id: lookup.id });
+      if (traffic.rateLimited >= RATE_LIMITED_REPLY_MAX) {
+        this.count("overload_closed");
+        this.close(ws, Close.policyViolation, "repeated rate limiting");
+      }
+      return;
+    }
+    send(ws, { type: "lookup_result", id: lookup.id, cinnabar: xuids.filter((xuid) => this.isVisible(xuid)) });
+  }
+
+  /** Emits one point per counter per invocation; callers aggregate loops, and analytics failures are dropped. */
+  private count(event: "admission_refused" | "authentication_failed" | "overload_closed" | "lookup", value = 1): void {
+    if (value === 0) return;
+    try {
+      this.env.METRICS?.writeDataPoint({ blobs: [event], doubles: [value] });
+    } catch {
+      // Metrics must never interrupt admission, accounting, or socket cleanup.
+    }
+  }
+
+  /** Keeps the earliest alarm so handshake deadlines and budget expiry share one timer. */
+  private async scheduleAlarm(deadline: number): Promise<void> {
+    if (deadline >= this.alarmDeadline) return;
+    this.alarmDeadline = deadline;
+    try {
+      const current = await this.ctx.storage.getAlarm();
+      if (current !== null) this.alarmDeadline = Math.min(this.alarmDeadline, current);
+      if (current === null || this.alarmDeadline < current) await this.ctx.storage.setAlarm(this.alarmDeadline);
+    } catch (error) {
+      this.alarmDeadline = Infinity;
+      throw error;
+    }
   }
 
   private isVisible(xuid: string): boolean {
@@ -233,10 +375,14 @@ export class Hub extends DurableObject<Env> {
       const state = this.sessions.get(ws);
       if (state?.stage === "ready" && state.visible) return true;
     }
+    const until = this.linger.get(xuid);
+    if (until !== undefined && until > Date.now()) return true;
+    this.linger.delete(xuid);
     return false;
   }
 
   private reject(ws: WebSocket): void {
+    this.count("authentication_failed");
     send(ws, { type: "error", code: "unauthorized" });
     this.close(ws, Close.unauthorized, "unauthorized");
   }
@@ -250,8 +396,23 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
-  private save(ws: WebSocket, attachment: Attachment, persist = true): void {
+  /** Updates socket state and retains its flood budget across handshake transitions and wakes. */
+  private save(ws: WebSocket, session: Session & { traffic?: Traffic; ipHash?: string }, persist = true): void {
+    const attachment: Attachment = {
+      ...session,
+      traffic: session.traffic ?? this.sessions.get(ws)?.traffic ?? {
+        startedAt: Date.now(), frames: 0, bytes: 0, rateLimited: 0,
+      },
+    };
+    if (attachment.stage === "ready") delete attachment.ipHash;
+    else attachment.ipHash ??= this.sessions.get(ws)?.ipHash;
     if (persist) ws.serializeAttachment(attachment);
+    if (attachment.stage === "ready") {
+      this.releasePendingIp(ws);
+    } else if (attachment.ipHash && !this.ipBySocket.has(ws)) {
+      this.ipBySocket.set(ws, attachment.ipHash);
+      this.pendingByIp.set(attachment.ipHash, (this.pendingByIp.get(attachment.ipHash) ?? 0) + 1);
+    }
     this.sessions.set(ws, attachment);
     if (attachment.stage === "ready") {
       index(this.byXuid, attachment.xuid, ws);
@@ -259,7 +420,19 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
+  /** Releases a pending IP slot exactly once on authentication, refusal, close, or error. */
+  private releasePendingIp(ws: WebSocket): void {
+    const hash = this.ipBySocket.get(ws);
+    if (!hash) return;
+    this.ipBySocket.delete(ws);
+    const remaining = (this.pendingByIp.get(hash) ?? 1) - 1;
+    if (remaining === 0) this.pendingByIp.delete(hash);
+    else this.pendingByIp.set(hash, remaining);
+  }
+
+  /** Removes session indexes and retains recent visible usage only in memory. */
   private forget(ws: WebSocket): void {
+    this.releasePendingIp(ws);
     const attachment = this.sessions.get(ws);
     this.sessions.delete(ws);
     try {
@@ -270,16 +443,13 @@ export class Hub extends DurableObject<Env> {
     if (attachment?.stage === "ready") {
       unindex(this.byXuid, attachment.xuid, ws);
       unindex(this.byChannel, attachment.channel, ws);
+      if (attachment.visible || (!this.byXuid.has(attachment.xuid) && this.linger.has(attachment.xuid))) {
+        const deadline = Date.now() + PRESENCE_LINGER_MS;
+        this.linger.set(attachment.xuid, deadline);
+        this.ctx.waitUntil(this.scheduleAlarm(deadline));
+      }
     }
   }
-}
-
-/** Applies the rolling lookup limit at `now`: the admitted timestamps still in the window, plus `now` if admitted. */
-export function admitLookup(timestamps: number[], now: number): { admitted: boolean; lookups: number[] } {
-  const lookups = timestamps.filter((t) => now - t < LOOKUP_RATE_WINDOW_MS);
-  if (lookups.length >= LOOKUP_RATE_LIMIT) return { admitted: false, lookups };
-  lookups.push(now);
-  return { admitted: true, lookups };
 }
 
 function index<K>(map: Map<K, Set<WebSocket>>, key: K, ws: WebSocket): void {
@@ -306,4 +476,24 @@ function exceedsFrameLimit(text: string): boolean {
   if (text.length > MAX_FRAME_BYTES) return true;
   if (text.length * 3 <= MAX_FRAME_BYTES) return false;
   return new TextEncoder().encode(text).byteLength > MAX_FRAME_BYTES;
+}
+
+/** Orders release identities by version first and then build, with zero for old v1 records. */
+function compareReleases(a: string, aBuild = 0, b: string, bBuild = 0): number {
+  return compareVersions(a, b) || Math.sign(aBuild - bBuild);
+}
+
+/** Canonicalizes IPv6 addresses into /64 admission buckets, including compressed spellings. */
+function admissionIpBucket(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  try {
+    const canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+    const [left, right] = canonical.split("::");
+    const start = left ? left.split(":") : [];
+    const end = right ? right.split(":") : [];
+    const parts = right === undefined ? start : [...start, ...Array(8 - start.length - end.length).fill("0"), ...end];
+    return `${parts.slice(0, 4).join(":")}/64`;
+  } catch {
+    return "unknown";
+  }
 }

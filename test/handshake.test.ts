@@ -19,6 +19,16 @@ async function expectRejectedToken(token: string) {
 }
 
 describe("handshake", () => {
+  it("keeps display names out of handshake attachments", async () => {
+    const key = await clientKey();
+    const client = track(await connect());
+    client.send(hello(await mintToken({ cpk: key.cpk, xname: "Alex" })));
+    await client.next();
+    await runInDurableObject(hub(), (_: Hub, state) => {
+      expect(JSON.stringify(state.getWebSockets().map((ws) => ws.deserializeAttachment()))).not.toContain("Alex");
+    });
+  });
+
   it("welcomes a client that proves possession of the token's key", async () => {
     const key = await clientKey();
     const client = track(await connect());
@@ -26,7 +36,11 @@ describe("handshake", () => {
     const challenge = await client.next();
     expect(challenge.type).toBe("challenge");
     client.send({ type: "proof", signature: await sign(key, challenge.nonce as string) });
-    expect(await client.next()).toEqual({ type: "welcome", xuid: "2535412345678901", display_name: "Alex" });
+    expect(await client.next()).toEqual({
+      type: "welcome", xuid: "2535412345678901",
+      lookup_batch_max: 128, lookup_bucket_capacity: 1024, lookup_refill_per_min: 512,
+      cache_ttl_ms: 120_000, ping_interval_ms: 30_000, reconnect_max_ms: 300_000,
+    });
   });
 
   it("answers ping with pong at any stage", async () => {
@@ -38,12 +52,13 @@ describe("handshake", () => {
   it("ignores unknown message types and unknown fields", async () => {
     const key = await clientKey();
     const client = track(await connect());
-    client.send({ type: "future_thing", data: 1 });
     client.send({ ...hello(await mintToken({ cpk: key.cpk })), extra: "ignored" });
     const challenge = await client.next();
     expect(challenge.type).toBe("challenge");
     client.send({ type: "proof", signature: await sign(key, challenge.nonce as string), extra: true });
     expect((await client.next()).type).toBe("welcome");
+    client.send({ type: "future_thing", data: 1 });
+    expect((await client.lookup([])).type).toBe("lookup_result");
   });
 
   it("issues a fresh nonce per connection", async () => {
@@ -215,7 +230,8 @@ describe("framing", () => {
   });
 
   it("accepts an unknown message just under the limit", async () => {
-    const client = track(await connect());
+    const { client } = await login();
+    track(client);
     const frame = JSON.stringify({ type: "padding", pad: "" });
     client.send(JSON.stringify({ type: "padding", pad: "x".repeat(16 * 1024 - frame.length) }));
     client.send("ping");

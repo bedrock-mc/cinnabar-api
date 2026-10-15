@@ -149,6 +149,7 @@ export interface Login {
   channel?: string;
   visible?: boolean;
   clientVersion?: string;
+  clientBuild?: number;
 }
 
 export function hello(token: string, o: Login = {}) {
@@ -156,6 +157,7 @@ export function hello(token: string, o: Login = {}) {
     type: "hello",
     protocol: 1,
     client_version: o.clientVersion ?? "0.1.18",
+    client_build: o.clientBuild,
     channel: o.channel ?? "beta",
     visible: o.visible ?? true,
     token,

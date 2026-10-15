@@ -11,6 +11,7 @@
     // The authorization service's OIDC issuer for Minecraft multiplayer tokens.
     "ISSUER": "https://authorization.franchise.minecraft-services.net/"
   },
+  "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "cinnabar_api_events" }],
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "Hub" }]
   },

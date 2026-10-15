@@ -11,23 +11,10 @@ describe("HTTP routes", () => {
     expect(await res.json()).toEqual({ ok: true, api: "v1" });
   });
 
-  it("returns 404 for a channel with no recorded release", async () => {
-    expect((await get("/v1/releases/latest?channel=stable")).status).toBe(404);
-  });
-
-  it("rejects a missing or unknown channel", async () => {
-    expect((await get("/v1/releases/latest")).status).toBe(400);
-    expect((await get("/v1/releases/latest?channel=alpha")).status).toBe(400);
-  });
-
-  it("records a release and serves it as the channel's latest", async () => {
-    expect((await postRelease({ channel: "nightly", version: "0.1.19-nightly.20261013" })).status).toBe(204);
-    const res = await get("/v1/releases/latest?channel=nightly");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, string>;
-    expect(body).toMatchObject({ channel: "nightly", version: "0.1.19-nightly.20261013" });
-    expect(Date.parse(body.published_at!)).not.toBeNaN();
-    expect((await get("/v1/releases/latest?channel=beta")).status).toBe(404);
+  it("removes the public latest-release route for every channel", async () => {
+    for (const query of ["", "?channel=stable", "?channel=alpha"]) {
+      expect((await get(`/v1/releases/latest${query}`)).status).toBe(404);
+    }
   });
 
   it("answers 426 to a non-upgrade connect", async () => {
