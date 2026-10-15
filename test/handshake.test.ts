@@ -2,7 +2,7 @@ import { generateKeyPair } from "jose";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Hub } from "../src/hub";
-import { clientKey, connect, hello, hub, installFakeIssuer, login, mintToken, sign, type Client } from "./helpers";
+import { clientKey, connect, hello, hub, installFakeIssuer, issuer, login, mintToken, sign, type Client } from "./helpers";
 
 const open: Client[] = [];
 const track = (client: Client) => (open.push(client), client);
@@ -58,6 +58,18 @@ describe("handshake", () => {
 });
 
 describe("bad tokens", () => {
+  it("rejects unknown kids with 4401 without refetching within the refresh interval", async () => {
+    const key = await clientKey();
+    const client = track(await connect());
+    client.send(hello(await mintToken({ cpk: key.cpk })));
+    expect((await client.next()).type).toBe("challenge");
+    const fetches = issuer.fetches.length;
+    for (let i = 0; i < 3; i++) {
+      await expectRejectedToken(await mintToken({ cpk: key.cpk, kid: crypto.randomUUID() }));
+    }
+    expect(issuer.fetches).toHaveLength(fetches);
+  });
+
   it("rejects a token signed by another key", async () => {
     const { privateKey } = await generateKeyPair("RS256");
     await expectRejectedToken(await mintToken({ cpk: (await clientKey()).cpk, key: privateKey }));

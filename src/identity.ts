@@ -1,9 +1,8 @@
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JSONWebKeySet, type JWTPayload } from "jose";
-import { PROOF_CONTEXT } from "./protocol";
+import { JWKS_REFETCH_INTERVAL_MS, PROOF_CONTEXT } from "./protocol";
 
 export const MULTIPLAYER_AUDIENCE = "api://auth-minecraft-services/multiplayer";
 const KEYS_MAX_AGE_MS = 60 * 60 * 1000;
-const UNKNOWN_KID_COOLDOWN_MS = 30_000;
 const REFRESH_TIMEOUT_MS = 5_000; // half the handshake budget, so the cached-key fallback still lands in time
 const CLOCK_LEEWAY_S = 60;
 const ASYMMETRIC_ALGS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"];
@@ -31,11 +30,12 @@ interface KeySet {
   fetchedAt: number;
 }
 
-/** Verifies multiplayer tokens against one issuer's JWKS, cached for an hour and refetched on an unknown `kid`. */
+/** Verifies multiplayer tokens with hourly JWKS caching and at most one refresh attempt per minute. */
 export class IssuerKeys {
   readonly issuer: string;
   private keys: KeySet | undefined;
   private refreshing: Promise<KeySet> | undefined;
+  private lastRefreshAt = -Infinity;
 
   constructor(
     issuer: string,
@@ -74,13 +74,20 @@ export class IssuerKeys {
     return { xuid: xid, displayName: xname, cpk };
   }
 
+  /** Reuses cached keys or one shared refresh, throttling failed attempts as well as successful ones. */
   private async keysFor(kid: string | undefined, now: number): Promise<KeySet> {
     const keys = this.keys;
     const stale = !keys || now - keys.fetchedAt >= KEYS_MAX_AGE_MS;
-    const unknownKid =
-      keys && kid !== undefined && !keys.kids.has(kid) && now - keys.fetchedAt >= UNKNOWN_KID_COOLDOWN_MS;
+    const unknownKid = keys && kid !== undefined && !keys.kids.has(kid);
     if (!stale && !unknownKid) return keys!;
-    this.refreshing ??= this.boundedRefresh(now).finally(() => (this.refreshing = undefined));
+    if (!this.refreshing) {
+      if (now - this.lastRefreshAt < JWKS_REFETCH_INTERVAL_MS) {
+        if (keys) return keys;
+        throw new IssuerUnavailable("refresh throttled");
+      }
+      this.lastRefreshAt = now;
+      this.refreshing = this.boundedRefresh(now).finally(() => (this.refreshing = undefined));
+    }
     try {
       return (this.keys = await this.refreshing);
     } catch (err) {

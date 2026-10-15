@@ -98,7 +98,7 @@ export class Client {
   private readonly waiters: ((m: Message) => void)[] = [];
   readonly closed: Promise<{ code: number; reason: string }>;
 
-  constructor(readonly ws: WebSocket) {
+  constructor(readonly ws: WebSocket, options?: WebSocketAcceptOptions) {
     ws.addEventListener("message", (event) => {
       const data = event.data as string;
       const message = data === "pong" ? { type: "pong" } : (JSON.parse(data) as Message);
@@ -110,7 +110,7 @@ export class Client {
     this.closed = new Promise((resolve) => {
       ws.addEventListener("close", (event) => resolve({ code: event.code, reason: event.reason }));
     });
-    ws.accept();
+    ws.accept(options);
   }
 
   next(): Promise<Message> {

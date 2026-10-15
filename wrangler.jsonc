@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cinnabar-api",
+  "account_id": "a16be1f911ae0c715166f97c4af654eb",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-29",
   "workers_dev": true,
