@@ -432,9 +432,7 @@ export class Hub extends DurableObject<Env> {
       const current = this.sessions.get(source);
       return current?.stage === "ready" && (current.loadout?.revision ?? -1) >= message.revision;
     })) return;
-    const slots = admitLoadout(message.slots, (id) => this.ctx.storage.sql.exec(
-      "SELECT 1 FROM cosmetic_entitlements WHERE xuid = ? AND item_id = ?", state.xuid, id,
-    ).toArray().length !== 0);
+    const slots = this.ownedLoadout(state.xuid, message.slots);
     if (slots === null) { send(ws, { type: "error", code: "invalid_loadout" }); return; }
     for (const source of sources) {
       const current = this.sessions.get(source);
@@ -443,6 +441,13 @@ export class Hub extends DurableObject<Env> {
       });
     }
     this.broadcastLoadout(state);
+  }
+
+  /** Rechecks grants for new state and replay so a revoked grant cannot survive hibernation. */
+  private ownedLoadout(xuid: string, slots: Record<string, string | null>): Record<string, string | null> | null {
+    return admitLoadout(slots, (id) => this.ctx.storage.sql.exec(
+      "SELECT 1 FROM cosmetic_entitlements WHERE xuid = ? AND item_id = ?", xuid, id,
+    ).toArray().length !== 0);
   }
 
   /** Recomputes the newest session snapshot for each mutually nearby watcher. */
@@ -471,7 +476,7 @@ export class Hub extends DurableObject<Env> {
       if (sender.loadout && sender.loadout.revision >= (loadout?.revision ?? -1)) loadout = sender.loadout;
       nearby ||= sender.visible && this.watches(sender, peer);
     }
-    return { type: "loadout", xuid: state.xuid, uuid: state.uuid, revision: loadout?.revision ?? 0, slots: nearby ? loadout?.slots ?? {} : {} };
+    return { type: "loadout", xuid: state.xuid, uuid: state.uuid, revision: loadout?.revision ?? 0, slots: nearby && loadout ? this.ownedLoadout(state.xuid, loadout.slots) ?? {} : {} };
   }
 
   /** Charges unique identifiers from both arrays to the account's durable token bucket before answering. */
