@@ -34,9 +34,9 @@ function equip(client: Client, revision: number, slots: Record<string, string | 
   client.send({ type: "loadout", revision, slots });
 }
 
-it("publishes authenticated loadouts only to mutual nearby watchers and ignores legacy hats", async () => {
+it.each(catalog.items.filter((item) => item.free))("publishes free catalog item $display_name only to mutual nearby watchers and ignores legacy hats", async (item) => {
   const a = await player(A), b = await player(B), other = await player("2535400000000413");
-  watch(a, [B]); equip(a, 1); await flush(a); await flush(b);
+  watch(a, [B]); equip(a, 1, { [item.slot]: item.id }); await flush(a); await flush(b);
   watch(b, [A]);
   expect(await b.next()).toMatchObject({ type: "loadout", xuid: A, uuid: await identityUuid(A), revision: 1, slots: { [item.slot]: item.id } });
   a.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, hat_id: "crown" });
