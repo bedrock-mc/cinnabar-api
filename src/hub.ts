@@ -23,6 +23,8 @@ import {
   type Lookup,
   type ReleaseRecord,
   type ServerMessage,
+  type EmoteState,
+  EMOTE_TTL_MS,
 } from "./protocol";
 
 /** Per-socket state, persisted with serializeAttachment so it survives hibernation. */
@@ -40,7 +42,8 @@ type Session =
       channel: Channel;
       visible: boolean;
     }
-  | { stage: "ready"; xuid: string; uuid: string; channel: Channel; visible: boolean };
+  | { stage: "ready"; xuid: string; uuid: string; channel: Channel; visible: boolean;
+      watching?: string[]; emote?: { id: string; elapsed: number; updated: number } };
 
 interface Traffic {
   startedAt: number;
@@ -67,6 +70,7 @@ export class Hub extends DurableObject<Env> {
   private readonly byUuid = new Map<string, Set<WebSocket>>();
   private readonly linger = new Map<string, number>();
   private readonly byChannel = new Map<Channel, Set<WebSocket>>();
+  private readonly emoteWatchers = new Map<string, Set<WebSocket>>();
   private readonly sockets = new Set<WebSocket>();
   private readonly pendingByIp = new Map<string, number>();
   private readonly ipBySocket = new Map<WebSocket, string>();
@@ -236,6 +240,7 @@ export class Hub extends DurableObject<Env> {
       case "ready":
         if (msg.type === "visibility") return this.onVisibility(ws, attachment, msg.visible);
         if (msg.type === "lookup") return this.onLookup(ws, attachment, msg, now);
+        if (msg.type === "emote_state") return this.onEmoteState(ws, attachment, msg, now);
         return this.close(ws, Close.policyViolation, "already authenticated");
     }
   }
@@ -321,7 +326,66 @@ export class Hub extends DurableObject<Env> {
       this.linger.delete(state.xuid);
       this.linger.delete(state.uuid);
     }
-    if (state.visible !== visible) this.save(ws, { ...state, visible });
+    if (state.visible !== visible) {
+      if (!visible && state.emote) this.broadcastEmote({ ...state, emote: undefined }, Date.now());
+      this.save(ws, { ...state, visible, emote: visible ? state.emote : undefined });
+    }
+  }
+
+  /** Replaces bounded nearby subscriptions and publishes only the authenticated account's emote. */
+  private onEmoteState(ws: WebSocket, state: Ready, message: EmoteState, now: number): void {
+    const watching = message.xuids === undefined && message.uuids === undefined
+      ? state.watching ?? [] : [...new Set([...(message.xuids ?? []), ...(message.uuids ?? [])])];
+    const previous = new Set(state.watching ?? []);
+    for (const id of previous) unindex(this.emoteWatchers, id, ws);
+    const emote = state.visible && message.emote_id !== null
+      ? { id: message.emote_id, elapsed: message.elapsed_ms, updated: now } : undefined;
+    const next = { ...state, watching, emote };
+    this.save(ws, next);
+    // A newly visible player can already be dancing when its watcher arrives.
+    const sources = new Set<WebSocket>();
+    for (const id of watching) {
+      if (previous.has(id)) continue;
+      for (const source of this.byXuid.get(id) ?? this.byUuid.get(id) ?? []) sources.add(source);
+    }
+    for (const source of sources) {
+      const sender = this.sessions.get(source);
+      if (source !== ws && sender?.stage === "ready" && sender.visible && sender.emote && this.watches(sender, next)) {
+        const current = this.emoteMessage(sender, now);
+        if (current.emote_id !== null) send(ws, current);
+      }
+    }
+    if (state.emote) {
+      const departed = (state.watching ?? []).filter((id) => !watching.includes(id));
+      this.broadcastEmote({ ...state, watching: departed, emote: undefined }, now);
+    }
+    if (emote || state.emote) this.broadcastEmote(next, now);
+  }
+
+  /** Sends an account's live state once to each subscribed connection, across both identity namespaces. */
+  private broadcastEmote(state: Ready, now: number): void {
+    const recipients = new Set([
+      ...(this.emoteWatchers.get(state.xuid) ?? []), ...(this.emoteWatchers.get(state.uuid) ?? []),
+    ]);
+    const message = this.emoteMessage(state, now);
+    for (const recipient of recipients) {
+      const receiver = this.sessions.get(recipient);
+      if (receiver?.stage === "ready" && receiver.xuid !== state.xuid && this.watches(state, receiver)) send(recipient, message);
+    }
+  }
+
+  /** Requires both clients to report each other nearby, without collecting a server address. */
+  private watches(sender: Ready, peer: Ready): boolean {
+    return sender.watching?.some((id) => id === peer.xuid || id === peer.uuid) ?? false;
+  }
+
+  /** Computes a remaining lease, so hibernation and late subscriptions never restart an expired dance. */
+  private emoteMessage(state: Ready, now: number): Extract<ServerMessage, { type: "emote" }> {
+    const age = state.emote ? Math.max(0, now - state.emote.updated) : EMOTE_TTL_MS;
+    const active = state.visible && age < EMOTE_TTL_MS ? state.emote : undefined;
+    return { type: "emote", xuid: state.xuid, uuid: state.uuid, emote_id: active?.id ?? null,
+      elapsed_ms: active ? Math.min(0xffffffff, active.elapsed + age) : 0,
+      valid_for_ms: active ? EMOTE_TTL_MS - age : 0 };
   }
 
   /** Charges unique identifiers from both arrays to the account's durable token bucket before answering. */
@@ -433,6 +497,7 @@ export class Hub extends DurableObject<Env> {
       index(this.byXuid, attachment.xuid, ws);
       index(this.byUuid, attachment.uuid, ws);
       index(this.byChannel, attachment.channel, ws);
+      for (const id of attachment.watching ?? []) index(this.emoteWatchers, id, ws);
     }
   }
 
@@ -457,6 +522,8 @@ export class Hub extends DurableObject<Env> {
       // The socket is already gone, and with it the attachment.
     }
     if (attachment?.stage === "ready") {
+      if (attachment.emote) this.broadcastEmote({ ...attachment, emote: undefined }, Date.now());
+      for (const id of attachment.watching ?? []) unindex(this.emoteWatchers, id, ws);
       unindex(this.byXuid, attachment.xuid, ws);
       unindex(this.byUuid, attachment.uuid, ws);
       unindex(this.byChannel, attachment.channel, ws);

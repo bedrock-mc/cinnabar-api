@@ -70,6 +70,15 @@ export interface Lookup {
   xuids?: string[];
   uuids?: string[];
 }
+export interface EmoteState {
+  type: "emote_state";
+  emote_id: string | null;
+  elapsed_ms: number;
+  xuids?: string[];
+  uuids?: string[];
+}
+export const EMOTE_TTL_MS = schemaJson.$defs.Emote.properties.valid_for_ms.maximum;
+
 export interface ReleaseRecord {
   channel: Channel;
   version: string;
@@ -88,17 +97,19 @@ export type ServerMessage =
   | { type: "error"; code: "unauthorized" }
   | { type: "error"; code: "rate_limited"; id: number }
   | { type: "lookup_result"; id: number; cinnabar: string[]; cinnabar_uuids?: string[] }
-  | ({ type: "release" } & ReleaseRecord);
+  | ({ type: "release" } & ReleaseRecord)
+  | { type: "emote"; xuid: string; uuid: string; emote_id: string | null; elapsed_ms: number; valid_for_ms: number };
 
 interface ClientMessages {
   hello: Hello;
   proof: Proof;
   visibility: Visibility;
   lookup: Lookup;
+  emote_state: EmoteState;
 }
 export type ClientMessage = ClientMessages[keyof ClientMessages];
 
-const defNames = { hello: "Hello", proof: "Proof", visibility: "Visibility", lookup: "Lookup" } as const;
+const defNames = { hello: "Hello", proof: "Proof", visibility: "Visibility", lookup: "Lookup", emote_state: "EmoteState" } as const;
 
 /** Returns a validator for one `$defs` entry of schema/v1.json, so the schema stays the single source of limits. */
 function validatorFor(def: string): Validator {
@@ -133,7 +144,7 @@ export function decodeClientMessage(text: string): Decoded {
   if (typeof type !== "string") return { kind: "malformed" };
   if (!Object.hasOwn(clientValidators, type)) return { kind: "unknown" };
   if (!clientValidators[type as keyof ClientMessages].validate(value).valid) return { kind: "invalid" };
-  if (type === "lookup") {
+  if (type === "lookup" || type === "emote_state") {
     const lookup = value as Lookup;
     if ((lookup.xuids?.length ?? 0) + (lookup.uuids?.length ?? 0) > SERVER_PARAMETERS.lookup_batch_max) {
       return { kind: "invalid" };

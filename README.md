@@ -65,6 +65,20 @@ The text frame `ping` gets `pong` without waking the Hub.
   affecting admission or cleanup. Workers observability remains off so invocation logs do not
   record request metadata.
 
+## Shared emotes
+
+Authenticated clients send `emote_state` with a clip identifier (or `null` to stop), elapsed
+playback time, and up to 128 nearby XUIDs/UUIDs combined. Phase refreshes can omit both
+identifier arrays to retain existing watches; an explicit empty array clears them. The hub forwards `emote` updates only
+when both clients report each other nearby. It derives sender identities from authentication;
+clients cannot supply another account's identity. Clients ignore unknown clip identifiers.
+
+The existing visibility option controls publishing. Stops, visibility opt-out, disconnects and
+removed peers withdraw playback. Active updates carry a remaining lease of at most 15 seconds;
+clients renew at five-second intervals and expire silence locally. Newly subscribed clients
+receive only a still-live dance. Socket attachments retain watches and phases across hibernation;
+no emote history is written to durable storage or logs. No server addresses are sent.
+
 ## Development
 
 ```sh
