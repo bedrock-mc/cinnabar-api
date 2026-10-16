@@ -44,6 +44,10 @@ describe("news source", () => {
     publishedAt: "2026-10-16T00:00:00Z",
   };
 
+  it("accepts an https hero image", () => {
+    expect(newsProblems([{ ...good, imageUrl: "https://example.com/hero.png" }])).toEqual([]);
+  });
+
   it.each<[string, NewsItem[], RegExp]>([
     ["http URL", [{ ...good, url: "http://example.com/a" }], /items\/0\/url:/],
     ["http image", [{ ...good, imageUrl: "http://example.com/a.png" }], /items\/0\/imageUrl:/],
