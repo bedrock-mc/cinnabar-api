@@ -31,14 +31,22 @@ export async function catalogResponse(request: Request): Promise<Response> {
   return new Response(matches ? null : body, { status: matches ? 304 : 200, headers });
 }
 
-/** Streams only reviewed, catalog-addressed R2 objects; clients verify the declared digest and size. */
+/** Catalog asset bytes read in this isolate; the assets are small and immutable, so each is read from R2 once. */
+const assetBytes = new Map<string, ArrayBuffer>();
+
+/** Serves only reviewed, catalog-addressed R2 objects; clients verify the declared digest and size. */
 export async function assetResponse(hash: string, bucket: R2Bucket): Promise<Response> {
   const assets = catalog.items.flatMap((item) => Object.entries(item.assets).map(([kind, asset]) => ({ kind, asset, license: item.license })));
   const entry = assets.find(({ asset }) => asset.sha256 === hash);
   if (!entry) return new Response(null, { status: 404 });
-  const object = await bucket.get(hash);
-  if (!object || object.size !== entry.asset.bytes) return new Response(null, { status: 404 });
-  return new Response(object.body, { headers: {
+  let bytes = assetBytes.get(hash);
+  if (!bytes) {
+    const object = await bucket.get(hash);
+    if (!object || object.size !== entry.asset.bytes) return new Response(null, { status: 404 });
+    bytes = await object.arrayBuffer();
+    assetBytes.set(hash, bytes);
+  }
+  return new Response(bytes, { headers: {
     "Content-Type": entry.kind === "texture" ? "image/png" : "application/json",
     "Cache-Control": "public, max-age=31536000, immutable", ETag: `"${hash}"`,
     "X-Content-Type-Options": "nosniff", Link: `<${entry.license}>; rel="license"`,
