@@ -111,7 +111,7 @@ and [LICENSES/cosmetics.md](LICENSES/cosmetics.md).
 public cache lifetime. Each item declares a namespaced ID, a slot, a display name,
 free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
 and render flags. Geometry, PNG texture and optional animation assets each declare a
-URL, SHA-256 digest and byte count. The initial catalog contains original bunny ears.
+URL, SHA-256 digest and byte count. The initial catalog starts with original bunny ears and retains the original crown.
 The original artwork retains Cinnabar's [PolyForm Noncommercial 1.0.0 license](LICENSES/cosmetics.md).
 The Worker code remains MIT-licensed.
 
