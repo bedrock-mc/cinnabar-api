@@ -71,6 +71,7 @@ export interface Lookup {
   uuids?: string[];
 }
 export interface EmoteState {
+  hat_id?: string | null;
   type: "emote_state";
   emote_id: string | null;
   elapsed_ms: number;
@@ -92,6 +93,7 @@ export interface ReleaseHookRequest {
 }
 
 export type ServerMessage =
+  | { type: "cosmetic"; xuid: string; uuid: string; hat_id: string | null; valid_for_ms: number }
   | { type: "challenge"; nonce: string }
   | ({ type: "welcome"; xuid: string } & WelcomeParameters)
   | { type: "error"; code: "unauthorized" }
