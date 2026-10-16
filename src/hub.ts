@@ -43,6 +43,7 @@ type Session =
       visible: boolean;
     }
   | { stage: "ready"; xuid: string; uuid: string; channel: Channel; visible: boolean;
+      hat?: { id: string; updated: number };
       watching?: string[]; emote?: { id: string; elapsed: number; updated: number } };
 
 interface Traffic {
@@ -327,9 +328,10 @@ export class Hub extends DurableObject<Env> {
       this.linger.delete(state.uuid);
     }
     if (state.visible !== visible) {
-      const next = { ...state, visible, emote: visible ? state.emote : undefined };
+      const next = { ...state, visible, emote: visible ? state.emote : undefined, hat: visible ? state.hat : undefined };
       this.save(ws, next);
       if (!visible && state.emote) this.broadcastEmote(next, Date.now());
+      if (!visible && state.hat) this.broadcastCosmetic(next, Date.now());
     }
   }
 
@@ -341,7 +343,9 @@ export class Hub extends DurableObject<Env> {
     for (const id of previous) unindex(this.emoteWatchers, id, ws);
     const emote = state.visible && message.emote_id !== null
       ? { id: message.emote_id, elapsed: message.elapsed_ms, updated: now } : undefined;
-    const next = { ...state, watching, emote };
+    const hat = message.hat_id === undefined ? state.hat
+      : state.visible && message.hat_id !== null ? { id: message.hat_id, updated: now } : undefined;
+    const next = { ...state, watching, emote, hat };
     this.save(ws, next);
     // A newly visible player can already be dancing when its watcher arrives.
     const sources = new Set<WebSocket>();
@@ -351,16 +355,27 @@ export class Hub extends DurableObject<Env> {
     }
     for (const source of sources) {
       const sender = this.sessions.get(source);
-      if (source !== ws && sender?.stage === "ready" && sender.visible && sender.emote && this.watches(sender, next)) {
-        const current = this.emoteMessage(sender, now);
-        if (current.emote_id !== null) send(ws, current);
+      if (source !== ws && sender?.stage === "ready" && sender.visible && this.watches(sender, next)) {
+        if (sender.emote) {
+          const current = this.emoteMessage(sender, now);
+          if (current.emote_id !== null) send(ws, current);
+        }
+        if (sender.hat) {
+          const current = this.cosmeticMessage(sender, now);
+          if (current.hat_id !== null) send(ws, current);
+        }
       }
     }
     if (state.emote) {
       const departed = (state.watching ?? []).filter((id) => !watching.includes(id));
       this.broadcastEmote({ ...state, watching: departed, emote: undefined }, now);
     }
+    if (state.hat) {
+      const departed = (state.watching ?? []).filter((id) => !watching.includes(id));
+      this.broadcastCosmetic({ ...state, watching: departed, hat: undefined }, now);
+    }
     if (emote || state.emote) this.broadcastEmote(next, now);
+    if (hat || state.hat) this.broadcastCosmetic(next, now);
   }
 
   /** Sends an account's live state once to each subscribed connection, across both identity namespaces. */
@@ -404,6 +419,38 @@ export class Hub extends DurableObject<Env> {
     const active = state.visible && age < EMOTE_TTL_MS ? state.emote : undefined;
     return { type: "emote", xuid: state.xuid, uuid: state.uuid, emote_id: active?.id ?? null,
       elapsed_ms: active ? Math.min(0xffffffff, active.elapsed + age) : 0,
+      valid_for_ms: active ? EMOTE_TTL_MS - age : 0 };
+  }
+
+  /** Shares hats through the same mutual nearby subscription, independent of emote playback. */
+  private broadcastCosmetic(state: Ready, now: number): void {
+    const recipients = new Set([
+      ...(this.emoteWatchers.get(state.xuid) ?? []), ...(this.emoteWatchers.get(state.uuid) ?? []),
+    ]);
+    const current = this.cosmeticMessage(state, now);
+    for (const recipient of recipients) {
+      const receiver = this.sessions.get(recipient);
+      if (receiver?.stage !== "ready" || receiver.xuid === state.xuid || !this.watches(state, receiver)) continue;
+      let message = current;
+      if (current.hat_id === null) {
+        let updated = -Infinity;
+        for (const source of this.byXuid.get(state.xuid) ?? []) {
+          const sender = this.sessions.get(source);
+          if (source.readyState !== WebSocket.OPEN || sender?.stage !== "ready" || !sender.visible || !sender.hat ||
+              !this.watches(sender, receiver) || sender.hat.updated < updated) continue;
+          const remaining = this.cosmeticMessage(sender, now);
+          if (remaining.hat_id !== null) { message = remaining; updated = sender.hat.updated; }
+        }
+      }
+      send(recipient, message);
+    }
+  }
+
+  /** Keeps hibernated or disconnected selections from surviving beyond their advertised lease. */
+  private cosmeticMessage(state: Ready, now: number): Extract<ServerMessage, { type: "cosmetic" }> {
+    const age = state.hat ? Math.max(0, now - state.hat.updated) : EMOTE_TTL_MS;
+    const active = state.visible && age < EMOTE_TTL_MS ? state.hat : undefined;
+    return { type: "cosmetic", xuid: state.xuid, uuid: state.uuid, hat_id: active?.id ?? null,
       valid_for_ms: active ? EMOTE_TTL_MS - age : 0 };
   }
 
@@ -542,6 +589,7 @@ export class Hub extends DurableObject<Env> {
     }
     if (attachment?.stage === "ready") {
       if (attachment.emote) this.broadcastEmote({ ...attachment, emote: undefined }, Date.now());
+      if (attachment.hat) this.broadcastCosmetic({ ...attachment, hat: undefined }, Date.now());
       for (const id of attachment.watching ?? []) unindex(this.emoteWatchers, id, ws);
       unindex(this.byXuid, attachment.xuid, ws);
       unindex(this.byUuid, attachment.uuid, ws);
