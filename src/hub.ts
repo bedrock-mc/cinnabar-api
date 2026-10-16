@@ -327,8 +327,9 @@ export class Hub extends DurableObject<Env> {
       this.linger.delete(state.uuid);
     }
     if (state.visible !== visible) {
-      if (!visible && state.emote) this.broadcastEmote({ ...state, emote: undefined }, Date.now());
-      this.save(ws, { ...state, visible, emote: visible ? state.emote : undefined });
+      const next = { ...state, visible, emote: visible ? state.emote : undefined };
+      this.save(ws, next);
+      if (!visible && state.emote) this.broadcastEmote(next, Date.now());
     }
   }
 
@@ -370,8 +371,26 @@ export class Hub extends DurableObject<Env> {
     const message = this.emoteMessage(state, now);
     for (const recipient of recipients) {
       const receiver = this.sessions.get(recipient);
-      if (receiver?.stage === "ready" && receiver.xuid !== state.xuid && this.watches(state, receiver)) send(recipient, message);
+      if (receiver?.stage === "ready" && receiver.xuid !== state.xuid && this.watches(state, receiver)) {
+        send(recipient, message.emote_id === null ? this.remainingEmote(state, receiver, now) : message);
+      }
     }
+  }
+
+  /** Re-announces the newest live source still nearby to this peer before stopping an account's emote. */
+  private remainingEmote(state: Ready, peer: Ready, now: number): Extract<ServerMessage, { type: "emote" }> {
+    let message = this.emoteMessage({ ...state, emote: undefined }, now);
+    let updated = -Infinity;
+    for (const source of this.byXuid.get(state.xuid) ?? []) {
+      const sender = this.sessions.get(source);
+      if (source.readyState !== WebSocket.OPEN || sender?.stage !== "ready" || !sender.visible || !sender.emote ||
+          !this.watches(sender, peer) || sender.emote.updated < updated) continue;
+      const current = this.emoteMessage(sender, now);
+      if (current.emote_id === null) continue;
+      message = current;
+      updated = sender.emote.updated;
+    }
+    return message;
   }
 
   /** Requires both clients to report each other nearby, without collecting a server address. */

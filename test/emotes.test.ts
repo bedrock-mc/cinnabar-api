@@ -40,6 +40,99 @@ it("shares authenticated start, phase and stop only with subscribed nearby accou
   expect(await b.next()).toMatchObject({ xuid: A, emote_id: null, valid_for_ms: 0 });
 });
 
+it.each(["close", "visibility", "stop", "departure"] as const)(
+  "keeps the newer socket's emote when an older account socket withdraws by %s",
+  async (withdrawal) => {
+    const older = await player(A);
+    const newer = await player(A);
+    const watcher = await player(B);
+    watcher.send({ type: "emote_state", xuids: [A], emote_id: null, elapsed_ms: 0 });
+    await flush(watcher);
+    older.send({ type: "emote_state", xuids: [B], emote_id: CLIP, elapsed_ms: 100 });
+    expect(await watcher.next()).toMatchObject({ xuid: A, emote_id: CLIP });
+    newer.send({ type: "emote_state", xuids: [B], emote_id: "cinnabar:wave", elapsed_ms: 900 });
+    expect(await watcher.next()).toMatchObject({ xuid: A, emote_id: "cinnabar:wave" });
+
+    if (withdrawal === "close") {
+      older.close();
+      await older.closed;
+    } else {
+      older.send(withdrawal === "visibility"
+        ? { type: "visibility", visible: false }
+        : withdrawal === "departure"
+          ? { type: "emote_state", xuids: [], emote_id: CLIP, elapsed_ms: 0 }
+          : { type: "emote_state", emote_id: null, elapsed_ms: 0 });
+      await flush(older);
+    }
+    const remaining = await watcher.next();
+    expect(remaining).toMatchObject({ xuid: A, emote_id: "cinnabar:wave" });
+    expect(remaining.elapsed_ms).toBeGreaterThanOrEqual(900);
+    expect(remaining.valid_for_ms).toBeGreaterThan(0);
+    await flush(watcher);
+
+    newer.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
+    expect(await watcher.next()).toMatchObject({ xuid: A, emote_id: null, valid_for_ms: 0 });
+    await flush(watcher);
+  },
+);
+
+it("falls back to an older active socket when the newer socket stops", async () => {
+  const older = await player(A);
+  const newer = await player(A);
+  const watcher = await player(B);
+  watcher.send({ type: "emote_state", uuids: [await identityUuid(A)], emote_id: null, elapsed_ms: 0 });
+  await flush(watcher);
+  older.send({ type: "emote_state", xuids: [B], emote_id: CLIP, elapsed_ms: 100 });
+  expect(await watcher.next()).toMatchObject({ emote_id: CLIP });
+  newer.send({ type: "emote_state", xuids: [B], emote_id: "cinnabar:wave", elapsed_ms: 900 });
+  expect(await watcher.next()).toMatchObject({ emote_id: "cinnabar:wave" });
+  newer.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
+  expect(await watcher.next()).toMatchObject({ xuid: A, emote_id: CLIP });
+  await flush(watcher);
+  older.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
+  expect(await watcher.next()).toMatchObject({ xuid: A, emote_id: null, valid_for_ms: 0 });
+});
+
+it.each(["active", "expired", "hidden", "elsewhere"] as const)(
+  "arbitrates %s remaining sources after rebuilding socket attachments",
+  async (condition) => {
+    const older = await player(A);
+    const newer = await player(A);
+    const watcher = await player(B);
+    watcher.send({ type: "emote_state", xuids: [A], emote_id: null, elapsed_ms: 0 });
+    await flush(watcher);
+    older.send({ type: "emote_state", xuids: [B], emote_id: CLIP, elapsed_ms: 100 });
+    await watcher.next();
+    newer.send({ type: "emote_state", xuids: [B], emote_id: "cinnabar:wave", elapsed_ms: 900 });
+    await watcher.next();
+
+    await runInDurableObject(hub(), async (_, state) => {
+      const sources = state.getWebSockets().filter((ws) => ws.deserializeAttachment()?.xuid === A);
+      const withdrawing = sources.find((ws) => ws.deserializeAttachment().emote.id === CLIP)!;
+      const remaining = sources.find((ws) => ws !== withdrawing)!;
+      const attachment = remaining.deserializeAttachment();
+      remaining.serializeAttachment({
+        ...attachment,
+        visible: condition !== "hidden",
+        watching: condition === "elsewhere" ? [] : attachment.watching,
+        emote: { ...attachment.emote, updated: Date.now() - (condition === "expired" ? 15001 : 5000) },
+      });
+      const rebuilt = new Hub(state, env);
+      await rebuilt.webSocketMessage(withdrawing, JSON.stringify({ type: "emote_state", emote_id: null, elapsed_ms: 0 }));
+    });
+    const result = await watcher.next();
+    expect(result).toMatchObject({ xuid: A, emote_id: condition === "active" ? "cinnabar:wave" : null });
+    if (condition === "active") {
+      expect(result.elapsed_ms).toBeGreaterThanOrEqual(5900);
+      expect(result.valid_for_ms).toBeGreaterThan(0);
+      expect(result.valid_for_ms).toBeLessThanOrEqual(10000);
+    } else {
+      expect(result.valid_for_ms).toBe(0);
+    }
+    await flush(watcher);
+  },
+);
+
 it("rebuilds watches and replay leases from socket attachments", async () => {
   const a = await player(A);
   const b = await player(B);
