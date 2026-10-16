@@ -12,6 +12,7 @@
     "ISSUER": "https://authorization.franchise.minecraft-services.net/"
   },
   "analytics_engine_datasets": [{ "binding": "METRICS", "dataset": "cinnabar_api_events" }],
+  "r2_buckets": [{ "binding": "COSMETIC_ASSETS", "bucket_name": "cinnabar-cosmetics" }],
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "Hub" }]
   },

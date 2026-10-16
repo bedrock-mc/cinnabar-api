@@ -1,12 +1,17 @@
+/// <reference types="vite/client" />
+import { Validator, type Schema } from "@cfworker/json-schema";
+import schema from "../schema/v1.json";
 import { runInDurableObject } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { Hub } from "../src/hub";
 import { afterEach, beforeAll, expect, it } from "vitest";
 import { hub, installFakeIssuer, login, type Client } from "./helpers";
 import { identityUuid } from "../src/identity";
+import { admitLoadout, catalog } from "../src/cosmetics";
 
 const open: Client[] = [];
 const A = "2535400000000411", B = "2535400000000412";
+const item = catalog.items[0]!;
 beforeAll(installFakeIssuer);
 afterEach(() => Promise.all(open.splice(0).map((client) => (client.close(), client.closed))));
 
@@ -16,74 +21,125 @@ async function player(xuid: string) {
   open.push(client);
   return client;
 }
-/** Orders previous frames and checks that no unrelated cosmetic frame was queued. */
+/** Orders previous frames and checks that no unrelated frame was queued. */
 async function flush(client: Client) {
   expect(await client.lookup([], 777)).toMatchObject({ type: "lookup_result", id: 777 });
 }
-/** Shares a hat on the existing nearby-player exchange without starting an emote. */
-function equip(client: Client, hat: string | null, watching?: string[]) {
-  client.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, hat_id: hat,
-    ...(watching === undefined ? {} : { xuids: watching }) });
+/** Replaces only nearby subscriptions, independently of the persistent selection. */
+function watch(client: Client, xuids: string[]) {
+  client.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, xuids });
+}
+/** Publishes a full replacement with an account-ordered revision. */
+function equip(client: Client, revision: number, slots: Record<string, string | null> = { [item.slot]: item.id }) {
+  client.send({ type: "loadout", revision, slots });
 }
 
-it("shares authenticated hats independently of emotes, then replaces and removes them", async () => {
+it("publishes authenticated loadouts only to mutual nearby watchers and ignores legacy hats", async () => {
   const a = await player(A), b = await player(B), other = await player("2535400000000413");
-  equip(a, "crown", [B]);
-  await flush(a);
-  await flush(b);
-  b.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, uuids: [await identityUuid(A)] });
-  expect(await b.next()).toMatchObject({ type: "cosmetic", xuid: A, uuid: await identityUuid(A), hat_id: "crown" });
-  equip(a, "bunny_ears");
-  expect(await b.next()).toMatchObject({ type: "cosmetic", hat_id: "bunny_ears" });
-  a.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
-  expect(await b.next()).toMatchObject({ hat_id: "bunny_ears" });
-  equip(a, null);
-  expect(await b.next()).toMatchObject({ hat_id: null, valid_for_ms: 0 });
-  await flush(other);
+  watch(a, [B]); equip(a, 1); await flush(a); await flush(b);
+  watch(b, [A]);
+  expect(await b.next()).toMatchObject({ type: "loadout", xuid: A, uuid: await identityUuid(A), revision: 1, slots: { [item.slot]: item.id } });
+  a.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, hat_id: "crown" });
+  await flush(a); await flush(b); await flush(other);
+  equip(a, 2, { head: null });
+  expect(await b.next()).toMatchObject({ revision: 2, slots: { head: null } });
 });
 
-it.each(["visibility", "close", "departure"] as const)("clears hats on %s", async (reason) => {
+it("keeps the newest revision across sockets, including equal revisions and disconnects", async () => {
+  const a = await player(A), a2 = await player(A), b = await player(B);
+  watch(a, [B]); watch(a2, [B]); watch(b, [A]); await flush(a); await flush(a2); await flush(b);
+  equip(a, 8); await b.next();
+  equip(a2, 7, {}); equip(a2, 8, {}); await flush(a2); await flush(b);
+  a.close(); await a.closed;
+  expect(await b.next()).toMatchObject({ revision: 8, slots: { head: item.id } });
+  equip(a2, 9, {});
+  expect(await b.next()).toMatchObject({ revision: 9, slots: {} });
+});
+
+it.each(["visibility", "close", "departure"] as const)("withdraws on %s", async (reason) => {
   const a = await player(A), b = await player(B);
-  b.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, xuids: [A] });
-  await flush(b);
-  equip(a, "crown", [B]);
-  await b.next();
+  watch(a, [B]); watch(b, [A]); await flush(a); await flush(b);
+  equip(a, 1); await b.next();
   if (reason === "close") { a.close(); await a.closed; }
   else if (reason === "visibility") a.send({ type: "visibility", visible: false });
-  else equip(a, "crown", []);
-  expect(await b.next()).toMatchObject({ type: "cosmetic", hat_id: null, valid_for_ms: 0 });
+  else watch(a, []);
+  expect(await b.next()).toMatchObject({ type: "loadout", slots: {} });
   await flush(b);
 });
 
-it.each([false, true])("restores bounded hibernation leases; expired=%s", async (expired) => {
+it("restores session loadouts through hibernation without an emote lease", async () => {
   const a = await player(A), b = await player(B);
-  equip(a, "crown", [B]);
-  await flush(a);
+  watch(a, [B]); equip(a, 3); await flush(a);
   await runInDurableObject(hub(), async (_, state) => {
-    const source = state.getWebSockets().find((ws) => ws.deserializeAttachment()?.xuid === A)!;
-    const attachment = source.deserializeAttachment();
-    source.serializeAttachment({ ...attachment, hat: { ...attachment.hat, updated: Date.now() - (expired ? 15001 : 5000) } });
     const rebuilt = new Hub(state, env);
     const receiver = state.getWebSockets().find((ws) => ws.deserializeAttachment()?.xuid === B)!;
     await rebuilt.webSocketMessage(receiver, JSON.stringify({ type: "emote_state", emote_id: null, elapsed_ms: 0, xuids: [A] }));
   });
-  if (!expired) {
-    const hat = await b.next();
-    expect(hat).toMatchObject({ type: "cosmetic", hat_id: "crown" });
-    expect(hat.valid_for_ms).toBeGreaterThan(0);
-    expect(hat.valid_for_ms).toBeLessThanOrEqual(10000);
-  }
+  expect(await b.next()).toMatchObject({ type: "loadout", revision: 3, slots: { head: item.id } });
+});
+
+it("ignores unknown slots and items, and rejects wrong-slot replacements atomically", async () => {
+  const a = await player(A), b = await player(B);
+  watch(a, [B]); watch(b, [A]); await flush(a); await flush(b);
+  equip(a, 1, { head: item.id, "future:slot": item.id, back: "future:unknown" });
+  expect(await b.next()).toMatchObject({ slots: { head: item.id } });
+  equip(a, 2, { back: item.id });
+  expect(await a.next()).toMatchObject({ type: "error", code: "invalid_loadout" });
   await flush(b);
 });
 
-it("retains another live socket's hat when an older source withdraws", async () => {
-  const older = await player(A), newer = await player(A), b = await player(B);
-  b.send({ type: "emote_state", emote_id: null, elapsed_ms: 0, xuids: [A] });
+it("checks grants for non-free items and treats free items as owned by everyone", () => {
+  expect(admitLoadout({ head: item.id }, () => false)).toEqual({ head: item.id });
+  const paid = { ...item, free: false };
+  expect(admitLoadout({ head: item.id }, () => false, [paid])).toBeNull();
+  expect(admitLoadout({ head: item.id }, (id) => id === item.id, [paid])).toEqual({ head: item.id });
+});
+
+it("serves a schema-valid versioned catalog, conditional ETags and only reviewed R2 hashes", async () => {
+  const response = await exports.default.fetch("https://api.test/v1/cosmetics/catalog");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(catalog);
+  const conditional = await exports.default.fetch("https://api.test/v1/cosmetics/catalog", { headers: { "If-None-Match": response.headers.get("ETag")! } });
+  expect(conditional.status).toBe(304);
+  expect(await conditional.text()).toBe("");
+  expect(response.headers.get("Cache-Control")).toContain("max-age");
+  const asset = item.assets.texture;
+  const missing = await exports.default.fetch(`https://api.test${asset.url}`);
+  expect(missing.status).toBe(404);
+  await env.COSMETIC_ASSETS.put(asset.sha256, new Uint8Array(asset.bytes));
+  const served = await exports.default.fetch(`https://api.test${asset.url}`);
+  expect(served.status).toBe(200);
+  expect(served.headers.get("Cache-Control")).toContain("immutable");
+  expect((await exports.default.fetch("https://api.test/v1/cosmetics/assets/unknown")).status).toBe(404);
+});
+
+
+it("keeps catalog metadata and every packaged original asset consistent with the schema and digest", async () => {
+  const validator = new Validator({ $ref: `${schema.$id}#/$defs/CosmeticsCatalog` }, "2020-12");
+  validator.addSchema(schema as unknown as Schema);
+  expect(validator.validate(catalog).valid).toBe(true);
+  const files = import.meta.glob("../assets/cosmetics/*", { query: "?raw", import: "default", eager: true });
+  const expected = new Set(catalog.items.flatMap((item) => Object.values(item.assets).map((asset) => asset.sha256)));
+  expect(new Set(Object.keys(files).map((name) => name.split("/").at(-1)))).toEqual(expected);
+  for (const item of catalog.items) for (const [kind, asset] of Object.entries(item.assets)) {
+    if (kind === "texture") continue; // PNG bytes are checked by the client asset-admission fixtures.
+    const bytes = new TextEncoder().encode(files[`../assets/cosmetics/${asset.sha256}`] as string);
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    expect(Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join("")).toBe(asset.sha256);
+    expect(bytes.byteLength).toBe(asset.bytes);
+  }
+});
+
+
+it("preserves the account loadout on a new socket and restores visibility without reviving an older selection", async () => {
+  const a = await player(A), b = await player(B);
+  watch(a, [B]); watch(b, [A]); await flush(a); await flush(b);
+  equip(a, 12); await b.next();
+  const joined = await login({ xuid: A }); open.push(joined.client);
+  expect(joined.welcome.loadout_revision).toBe(12);
+  a.send({ type: "visibility", visible: false });
+  expect(await b.next()).toMatchObject({ revision: 12, slots: {} });
+  a.send({ type: "visibility", visible: true });
+  expect(await b.next()).toMatchObject({ revision: 12, slots: { head: item.id } });
   await flush(b);
-  equip(older, "bunny_ears", [B]); await b.next();
-  equip(newer, "crown", [B]); await b.next();
-  older.close(); await older.closed;
-  expect(await b.next()).toMatchObject({ hat_id: "crown" });
-  equip(newer, null);
-  expect(await b.next()).toMatchObject({ hat_id: null, valid_for_ms: 0 });
 });

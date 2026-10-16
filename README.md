@@ -103,3 +103,42 @@ The release hook rejects every request until `RELEASE_HOOK_SECRET` is set.
 ## License
 
 MIT
+
+## Cosmetics
+
+`GET /v1/cosmetics/catalog` returns a versioned catalog with an ETag and a five-minute
+public cache lifetime. Each item declares a namespaced ID, a slot, a display name,
+free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
+and render flags. Geometry, PNG texture and optional animation assets each declare a
+URL, SHA-256 digest and byte count. The initial catalog contains original bunny ears.
+The original artwork is distributed under this repository's MIT license.
+
+Assets live in the `COSMETIC_ASSETS` R2 bucket, keyed by their SHA-256 digest. The
+same-origin `/v1/cosmetics/assets/:hash` route streams only catalog-listed objects
+with immutable cache headers. Before deploying, create the configured bucket and
+upload each file in `assets/cosmetics/` under its filename. No bucket or deployment
+is created by the tests.
+
+Authenticated clients send `{type:"loadout", revision, slots:{head:"cinnabar:bunny_ears"}}`.
+This replaces the account's connected-session loadout. Strictly newer revisions win
+across its sockets; welcome advertises the current `loadout_revision`. Omitted slots
+are empty and explicit `null` unequips a slot. The supported slots are defined in the
+schema. Unknown slots and items are ignored; a known item in the wrong slot or
+without ownership rejects the whole update with `invalid_loadout`.
+
+Nearby watchers receive `{type:"loadout",xuid,uuid,revision,slots}` under the existing
+mutual subscriptions. Loadouts survive hibernation without an emote lease. Visibility
+opt-out, departure and the final socket closing withdraw them with empty slots.
+A visibility or nearby change may repeat the same revision. Emotes keep their own
+lease and no longer carry cosmetic state; `hat_id` and `cosmetic` are removed.
+
+Free catalog items are owned by everyone. The Hub's `cosmetic_entitlements` table
+holds `(xuid,item_id)` grants for non-free items, checked before broadcasting. There
+is no purchase or payment path. Payments, additional items and moderation remain
+future work. Roll out the R2 assets and API first, then the matching client.
+
+Optional animation JSON currently describes `wind` motion: an axis (`x`, `y` or `z`),
+`max_degrees`, forward `speed` in blocks/second, `rise` and `fall` response rates,
+and a `joints` map from authored bone names to weights in `[0,1]`. Clients validate
+budgets and ignore unsupported items. `render_flags.double_sided` requests a reverse
+face for each triangle.
