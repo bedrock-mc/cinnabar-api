@@ -609,7 +609,8 @@
         "geometry_id",
         "attachment_bone",
         "offset",
-        "render_flags"
+        "render_flags",
+        "license"
       ],
       "properties": {
         "id": {
@@ -680,6 +681,12 @@
               "type": "boolean"
             }
           }
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 2048,
+          "pattern": "^https://",
+          "description": "License terms supplied with the original asset."
         }
       }
     },

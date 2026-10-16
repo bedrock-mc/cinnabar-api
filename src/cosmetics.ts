@@ -33,14 +33,14 @@ export async function catalogResponse(request: Request): Promise<Response> {
 
 /** Streams only reviewed, catalog-addressed R2 objects; clients verify the declared digest and size. */
 export async function assetResponse(hash: string, bucket: R2Bucket): Promise<Response> {
-  const assets = catalog.items.flatMap((item) => Object.entries(item.assets));
-  const asset = assets.find(([, asset]) => asset.sha256 === hash);
-  if (!asset) return new Response(null, { status: 404 });
+  const assets = catalog.items.flatMap((item) => Object.entries(item.assets).map(([kind, asset]) => ({ kind, asset, license: item.license })));
+  const entry = assets.find(({ asset }) => asset.sha256 === hash);
+  if (!entry) return new Response(null, { status: 404 });
   const object = await bucket.get(hash);
-  if (!object || object.size !== asset[1].bytes) return new Response(null, { status: 404 });
+  if (!object || object.size !== entry.asset.bytes) return new Response(null, { status: 404 });
   return new Response(object.body, { headers: {
-    "Content-Type": asset[0] === "texture" ? "image/png" : "application/json",
+    "Content-Type": entry.kind === "texture" ? "image/png" : "application/json",
     "Cache-Control": "public, max-age=31536000, immutable", ETag: `"${hash}"`,
-    "X-Content-Type-Options": "nosniff",
+    "X-Content-Type-Options": "nosniff", Link: `<${entry.license}>; rel="license"`,
   } });
 }

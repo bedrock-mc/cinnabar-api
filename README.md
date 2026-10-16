@@ -102,7 +102,8 @@ The release hook rejects every request until `RELEASE_HOOK_SECRET` is set.
 
 ## License
 
-MIT
+Worker code: MIT. Original cosmetic artwork retains the license listed in the catalog
+and [LICENSES/cosmetics.md](LICENSES/cosmetics.md).
 
 ## Cosmetics
 
@@ -111,7 +112,8 @@ public cache lifetime. Each item declares a namespaced ID, a slot, a display nam
 free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
 and render flags. Geometry, PNG texture and optional animation assets each declare a
 URL, SHA-256 digest and byte count. The initial catalog contains original bunny ears.
-The original artwork is distributed under this repository's MIT license.
+The original artwork retains Cinnabar's [PolyForm Noncommercial 1.0.0 license](LICENSES/cosmetics.md).
+The Worker code remains MIT-licensed.
 
 Assets live in the `COSMETIC_ASSETS` R2 bucket, keyed by their SHA-256 digest. The
 same-origin `/v1/cosmetics/assets/:hash` route streams only catalog-listed objects

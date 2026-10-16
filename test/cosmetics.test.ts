@@ -110,6 +110,7 @@ it("serves a schema-valid versioned catalog, conditional ETags and only reviewed
   const served = await exports.default.fetch(`https://api.test${asset.url}`);
   expect(served.status).toBe(200);
   expect(served.headers.get("Cache-Control")).toContain("immutable");
+  expect(served.headers.get("Link")).toBe(`<${item.license}>; rel="license"`);
   expect((await exports.default.fetch("https://api.test/v1/cosmetics/assets/unknown")).status).toBe(404);
 });
 

@@ -36,7 +36,8 @@
       ],
       "render_flags": {
         "double_sided": false
-      }
+      },
+      "license": "https://polyformproject.org/licenses/noncommercial/1.0.0"
     }
   ]
 }
