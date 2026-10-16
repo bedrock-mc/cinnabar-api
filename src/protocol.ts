@@ -71,12 +71,16 @@ export interface Lookup {
   uuids?: string[];
 }
 export interface EmoteState {
-  hat_id?: string | null;
   type: "emote_state";
   emote_id: string | null;
   elapsed_ms: number;
   xuids?: string[];
   uuids?: string[];
+}
+export interface LoadoutState {
+  type: "loadout";
+  revision: number;
+  slots: Record<string, string | null>;
 }
 export const EMOTE_TTL_MS = schemaJson.$defs.Emote.properties.valid_for_ms.maximum;
 
@@ -93,10 +97,10 @@ export interface ReleaseHookRequest {
 }
 
 export type ServerMessage =
-  | { type: "cosmetic"; xuid: string; uuid: string; hat_id: string | null; valid_for_ms: number }
+  | ({ xuid: string; uuid: string } & LoadoutState)
   | { type: "challenge"; nonce: string }
-  | ({ type: "welcome"; xuid: string } & WelcomeParameters)
-  | { type: "error"; code: "unauthorized" }
+  | ({ type: "welcome"; xuid: string; loadout_revision?: number } & WelcomeParameters)
+  | { type: "error"; code: "unauthorized" | "invalid_loadout" }
   | { type: "error"; code: "rate_limited"; id: number }
   | { type: "lookup_result"; id: number; cinnabar: string[]; cinnabar_uuids?: string[] }
   | ({ type: "release" } & ReleaseRecord)
@@ -108,10 +112,11 @@ interface ClientMessages {
   visibility: Visibility;
   lookup: Lookup;
   emote_state: EmoteState;
+  loadout: LoadoutState;
 }
 export type ClientMessage = ClientMessages[keyof ClientMessages];
 
-const defNames = { hello: "Hello", proof: "Proof", visibility: "Visibility", lookup: "Lookup", emote_state: "EmoteState" } as const;
+const defNames = { hello: "Hello", proof: "Proof", visibility: "Visibility", lookup: "Lookup", emote_state: "EmoteState", loadout: "LoadoutState" } as const;
 
 /** Returns a validator for one `$defs` entry of schema/v1.json, so the schema stays the single source of limits. */
 function validatorFor(def: string): Validator {

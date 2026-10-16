@@ -1,3 +1,4 @@
+import { admitLoadout } from "./cosmetics";
 import { DurableObject } from "cloudflare:workers";
 import { IssuerUnavailable, encodeBase64Url, identityUuid, issuerKeys, verifyProof } from "./identity";
 import {
@@ -24,6 +25,7 @@ import {
   type ReleaseRecord,
   type ServerMessage,
   type EmoteState,
+  type LoadoutState,
   EMOTE_TTL_MS,
 } from "./protocol";
 
@@ -43,7 +45,7 @@ type Session =
       visible: boolean;
     }
   | { stage: "ready"; xuid: string; uuid: string; channel: Channel; visible: boolean;
-      hat?: { id: string; updated: number };
+      loadout?: LoadoutState;
       watching?: string[]; emote?: { id: string; elapsed: number; updated: number } };
 
 interface Traffic {
@@ -83,6 +85,7 @@ export class Hub extends DurableObject<Env> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS lookup_budgets (
       xuid TEXT PRIMARY KEY, tokens REAL NOT NULL, updated_at INTEGER NOT NULL
     )`);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS cosmetic_entitlements (xuid TEXT NOT NULL, item_id TEXT NOT NULL, PRIMARY KEY (xuid, item_id))");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS hub_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     ctx.storage.sql.exec("INSERT OR IGNORE INTO hub_config (key, value) VALUES ('ip_salt', ?)", crypto.randomUUID());
     this.ipSalt = ctx.storage.sql.exec<{ value: string }>("SELECT value FROM hub_config WHERE key = 'ip_salt'").one().value;
@@ -241,6 +244,7 @@ export class Hub extends DurableObject<Env> {
       case "ready":
         if (msg.type === "visibility") return this.onVisibility(ws, attachment, msg.visible);
         if (msg.type === "lookup") return this.onLookup(ws, attachment, msg, now);
+        if (msg.type === "loadout") return this.onLoadout(ws, attachment, msg);
         if (msg.type === "emote_state") return this.onEmoteState(ws, attachment, msg, now);
         return this.close(ws, Close.policyViolation, "already authenticated");
     }
@@ -314,8 +318,12 @@ export class Hub extends DurableObject<Env> {
       this.linger.delete(xuid);
       this.linger.delete(uuid);
     }
-    this.save(ws, { stage: "ready", xuid, uuid, channel, visible });
-    send(ws, { type: "welcome", xuid, ...SERVER_PARAMETERS });
+    const loadout = [...(this.byXuid.get(xuid) ?? [])].map((socket) => this.sessions.get(socket))
+      .filter((session): session is Ready => session?.stage === "ready")
+      .map((session) => session.loadout).filter((value): value is LoadoutState => value !== undefined)
+      .sort((a, b) => b.revision - a.revision)[0];
+    this.save(ws, { stage: "ready", xuid, uuid, channel, visible, loadout });
+    send(ws, { type: "welcome", xuid, loadout_revision: loadout?.revision ?? 0, ...SERVER_PARAMETERS });
     if (latest && compareReleases(latest.version, latest.build, pending.clientVersion, pending.clientBuild) > 0) {
       send(ws, { type: "release", ...latest });
     }
@@ -328,10 +336,10 @@ export class Hub extends DurableObject<Env> {
       this.linger.delete(state.uuid);
     }
     if (state.visible !== visible) {
-      const next = { ...state, visible, emote: visible ? state.emote : undefined, hat: visible ? state.hat : undefined };
+      const next = { ...state, visible, emote: visible ? state.emote : undefined };
       this.save(ws, next);
       if (!visible && state.emote) this.broadcastEmote(next, Date.now());
-      if (!visible && state.hat) this.broadcastCosmetic(next, Date.now());
+      if (state.loadout) this.broadcastLoadout(next);
     }
   }
 
@@ -343,9 +351,7 @@ export class Hub extends DurableObject<Env> {
     for (const id of previous) unindex(this.emoteWatchers, id, ws);
     const emote = state.visible && message.emote_id !== null
       ? { id: message.emote_id, elapsed: message.elapsed_ms, updated: now } : undefined;
-    const hat = message.hat_id === undefined ? state.hat
-      : state.visible && message.hat_id !== null ? { id: message.hat_id, updated: now } : undefined;
-    const next = { ...state, watching, emote, hat };
+    const next = { ...state, watching, emote };
     this.save(ws, next);
     // A newly visible player can already be dancing when its watcher arrives.
     const sources = new Set<WebSocket>();
@@ -353,6 +359,7 @@ export class Hub extends DurableObject<Env> {
       if (previous.has(id)) continue;
       for (const source of this.byXuid.get(id) ?? this.byUuid.get(id) ?? []) sources.add(source);
     }
+    const replayedLoadouts = new Set<string>();
     for (const source of sources) {
       const sender = this.sessions.get(source);
       if (source !== ws && sender?.stage === "ready" && sender.visible && this.watches(sender, next)) {
@@ -360,9 +367,9 @@ export class Hub extends DurableObject<Env> {
           const current = this.emoteMessage(sender, now);
           if (current.emote_id !== null) send(ws, current);
         }
-        if (sender.hat) {
-          const current = this.cosmeticMessage(sender, now);
-          if (current.hat_id !== null) send(ws, current);
+        if (sender.loadout && !replayedLoadouts.has(sender.xuid)) {
+          send(ws, this.loadoutMessage(sender, next));
+          replayedLoadouts.add(sender.xuid);
         }
       }
     }
@@ -370,12 +377,8 @@ export class Hub extends DurableObject<Env> {
       const departed = (state.watching ?? []).filter((id) => !watching.includes(id));
       this.broadcastEmote({ ...state, watching: departed, emote: undefined }, now);
     }
-    if (state.hat) {
-      const departed = (state.watching ?? []).filter((id) => !watching.includes(id));
-      this.broadcastCosmetic({ ...state, watching: departed, hat: undefined }, now);
-    }
+    if (state.loadout && (state.watching ?? []).join() !== watching.join()) this.broadcastLoadout(state);
     if (emote || state.emote) this.broadcastEmote(next, now);
-    if (hat || state.hat) this.broadcastCosmetic(next, now);
   }
 
   /** Sends an account's live state once to each subscribed connection, across both identity namespaces. */
@@ -422,36 +425,58 @@ export class Hub extends DurableObject<Env> {
       valid_for_ms: active ? EMOTE_TTL_MS - age : 0 };
   }
 
-  /** Shares hats through the same mutual nearby subscription, independent of emote playback. */
-  private broadcastCosmetic(state: Ready, now: number): void {
+  /** Validates ownership atomically before replacing every socket's account snapshot. */
+  private onLoadout(ws: WebSocket, state: Ready, message: LoadoutState): void {
+    const sources = [...(this.byXuid.get(state.xuid) ?? [])];
+    if (sources.some((source) => {
+      const current = this.sessions.get(source);
+      return current?.stage === "ready" && (current.loadout?.revision ?? -1) >= message.revision;
+    })) return;
+    const slots = this.ownedLoadout(state.xuid, message.slots);
+    if (slots === null) { send(ws, { type: "error", code: "invalid_loadout" }); return; }
+    for (const source of sources) {
+      const current = this.sessions.get(source);
+      if (current?.stage === "ready") this.save(source, {
+        ...current, loadout: { type: "loadout", revision: message.revision, slots },
+      });
+    }
+    this.broadcastLoadout(state);
+  }
+
+  /** Rechecks grants for new state and replay so a revoked grant cannot survive hibernation. */
+  private ownedLoadout(xuid: string, slots: Record<string, string | null>): Record<string, string | null> | null {
+    return admitLoadout(slots, (id) => this.ctx.storage.sql.exec(
+      "SELECT 1 FROM cosmetic_entitlements WHERE xuid = ? AND item_id = ?", xuid, id,
+    ).toArray().length !== 0);
+  }
+
+  /** Recomputes the newest session snapshot for each mutually nearby watcher. */
+  private broadcastLoadout(state: Ready): void {
     const recipients = new Set([
       ...(this.emoteWatchers.get(state.xuid) ?? []), ...(this.emoteWatchers.get(state.uuid) ?? []),
     ]);
-    const current = this.cosmeticMessage(state, now);
     for (const recipient of recipients) {
       const receiver = this.sessions.get(recipient);
-      if (receiver?.stage !== "ready" || receiver.xuid === state.xuid || !this.watches(state, receiver)) continue;
-      let message = current;
-      if (current.hat_id === null) {
-        let updated = -Infinity;
-        for (const source of this.byXuid.get(state.xuid) ?? []) {
-          const sender = this.sessions.get(source);
-          if (source.readyState !== WebSocket.OPEN || sender?.stage !== "ready" || !sender.visible || !sender.hat ||
-              !this.watches(sender, receiver) || sender.hat.updated < updated) continue;
-          const remaining = this.cosmeticMessage(sender, now);
-          if (remaining.hat_id !== null) { message = remaining; updated = sender.hat.updated; }
-        }
+      if (receiver?.stage === "ready" && receiver.xuid !== state.xuid && (this.watches(state, receiver) || [...(this.byXuid.get(state.xuid) ?? [])].some((source) => {
+        const sender = this.sessions.get(source);
+        return sender?.stage === "ready" && this.watches(sender, receiver);
+      }))) {
+        send(recipient, this.loadoutMessage(state, receiver));
       }
-      send(recipient, message);
     }
   }
 
-  /** Keeps hibernated or disconnected selections from surviving beyond their advertised lease. */
-  private cosmeticMessage(state: Ready, now: number): Extract<ServerMessage, { type: "cosmetic" }> {
-    const age = state.hat ? Math.max(0, now - state.hat.updated) : EMOTE_TTL_MS;
-    const active = state.visible && age < EMOTE_TTL_MS ? state.hat : undefined;
-    return { type: "cosmetic", xuid: state.xuid, uuid: state.uuid, hat_id: active?.id ?? null,
-      valid_for_ms: active ? EMOTE_TTL_MS - age : 0 };
+  /** Session loadouts survive hibernation and have no emote-style expiration. */
+  private loadoutMessage(state: Ready, peer: Ready): Extract<ServerMessage, { type: "loadout" }> {
+    let loadout = state.loadout;
+    let nearby = false;
+    for (const source of this.byXuid.get(state.xuid) ?? []) {
+      const sender = this.sessions.get(source);
+      if (source.readyState !== WebSocket.OPEN || sender?.stage !== "ready") continue;
+      if (sender.loadout && sender.loadout.revision >= (loadout?.revision ?? -1)) loadout = sender.loadout;
+      nearby ||= sender.visible && this.watches(sender, peer);
+    }
+    return { type: "loadout", xuid: state.xuid, uuid: state.uuid, revision: loadout?.revision ?? 0, slots: nearby && loadout ? this.ownedLoadout(state.xuid, loadout.slots) ?? {} : {} };
   }
 
   /** Charges unique identifiers from both arrays to the account's durable token bucket before answering. */
@@ -577,10 +602,11 @@ export class Hub extends DurableObject<Env> {
     else this.pendingByIp.set(hash, remaining);
   }
 
-  /** Removes session indexes and retains recent visible usage only in memory. */
+  /** Removes session indexes, recovering departure state from the socket after hibernation. */
   private forget(ws: WebSocket): void {
     this.releasePendingIp(ws);
-    const attachment = this.sessions.get(ws);
+    const attachment = this.sessions.get(ws)
+      ?? (ws.deserializeAttachment() as Attachment | typeof CLOSED | null);
     this.sessions.delete(ws);
     try {
       ws.serializeAttachment(CLOSED);
@@ -589,7 +615,7 @@ export class Hub extends DurableObject<Env> {
     }
     if (attachment?.stage === "ready") {
       if (attachment.emote) this.broadcastEmote({ ...attachment, emote: undefined }, Date.now());
-      if (attachment.hat) this.broadcastCosmetic({ ...attachment, hat: undefined }, Date.now());
+      if (attachment.loadout) this.broadcastLoadout(attachment);
       for (const id of attachment.watching ?? []) unindex(this.emoteWatchers, id, ws);
       unindex(this.byXuid, attachment.xuid, ws);
       unindex(this.byUuid, attachment.uuid, ws);

@@ -1,3 +1,4 @@
+import { catalogResponse, assetResponse } from "./cosmetics";
 import { Hono } from "hono";
 import { isReleaseHookRequest } from "./protocol";
 import { hubFor } from "./routing";
@@ -9,6 +10,9 @@ const MAX_HOOK_BODY_BYTES = 1024;
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
+
+app.get("/v1/cosmetics/catalog", (c) => catalogResponse(c.req.raw));
+app.get("/v1/cosmetics/assets/:hash", (c) => assetResponse(c.req.param("hash"), c.env.COSMETIC_ASSETS));
 
 app.post("/v1/releases", async (c) => {
   if (!(await bearerMatches(c.req.header("Authorization"), c.env.RELEASE_HOOK_SECRET))) return c.body(null, 401);
