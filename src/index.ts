@@ -1,14 +1,21 @@
 import { Hono } from "hono";
+import { FEATURED_SERVERS } from "./featured";
+import { NEWS_ITEMS } from "./news";
 import { isReleaseHookRequest } from "./protocol";
 import { hubFor } from "./routing";
 
 export { Hub } from "./hub";
 
 const MAX_HOOK_BODY_BYTES = 1024;
+const EDITORIAL_HEADERS = { "Cache-Control": "public, max-age=300" };
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
+
+app.get("/v1/news", (c) => c.json({ items: NEWS_ITEMS }, 200, EDITORIAL_HEADERS));
+
+app.get("/v1/featured", (c) => c.json({ servers: FEATURED_SERVERS }, 200, EDITORIAL_HEADERS));
 
 app.post("/v1/releases", async (c) => {
   if (!(await bearerMatches(c.req.header("Authorization"), c.env.RELEASE_HOOK_SECRET))) return c.body(null, 401);

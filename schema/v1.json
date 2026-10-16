@@ -11,6 +11,8 @@
     { "$ref": "#/$defs/ClientMessage" },
     { "$ref": "#/$defs/ServerMessage" },
     { "$ref": "#/$defs/HealthResponse" },
+    { "$ref": "#/$defs/NewsResponse" },
+    { "$ref": "#/$defs/FeaturedResponse" },
     { "$ref": "#/$defs/ReleaseHookRequest" },
     { "$ref": "#/$defs/ReleaseRecord" }
   ],
@@ -36,6 +38,69 @@
       "required": ["ok", "api"],
       "properties": { "ok": { "const": true }, "api": { "const": "v1" } }
     },
+    "NewsResponse": {
+      "description": "GET /v1/news response: launcher home-screen items, newest first. Cache-Control: public, max-age=300.",
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/NewsItem" } }
+      }
+    },
+    "NewsItem": {
+      "type": "object",
+      "required": ["id", "title", "summary", "url", "publishedAt"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "url": { "$ref": "#/$defs/HttpsUrl" },
+        "imageUrl": { "$ref": "#/$defs/HttpsUrl" },
+        "publishedAt": {
+          "description": "RFC 3339 UTC timestamp with second precision.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "tag": { "type": "string", "minLength": 1, "maxLength": 32 }
+      }
+    },
+    "FeaturedResponse": {
+      "description": "GET /v1/featured response: launcher featured servers. Cache-Control: public, max-age=300.",
+      "type": "object",
+      "required": ["servers"],
+      "properties": {
+        "servers": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/FeaturedServer" } }
+      }
+    },
+    "FeaturedServer": {
+      "description": "address is a host name, or an experience id when port is 0.",
+      "type": "object",
+      "required": ["id", "name", "address", "port"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "address": { "type": "string", "minLength": 1, "maxLength": 253 },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "imageUrl": { "$ref": "#/$defs/HttpsUrl" },
+        "motd": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "tags": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+        }
+      },
+      "if": { "properties": { "port": { "const": 0 } } },
+      "then": { "properties": { "address": { "pattern": "^[A-Za-z0-9-]{1,64}$" } } },
+      "else": {
+        "properties": {
+          "address": {
+            "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+          }
+        }
+      }
+    },
+    "HttpsUrl": { "type": "string", "maxLength": 2048, "pattern": "^https://[^\\s]+$" },
     "ReleaseHookRequest": {
       "description": "POST /v1/releases body.",
       "type": "object",

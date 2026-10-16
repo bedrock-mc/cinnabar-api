@@ -1,7 +1,7 @@
 # cinnabar-api
 
-The Cinnabar client's API: release notifications and player presence, as a Cloudflare Worker
-(Hono) with one Durable Object. [`schema/v1.json`](schema/v1.json) is the machine-readable
+The Cinnabar client's API: release notifications, player presence, launcher news and featured servers, as a
+Cloudflare Worker (Hono) with one Durable Object. [`schema/v1.json`](schema/v1.json) is the machine-readable
 contract (JSON Schema for every HTTP body and WebSocket message); the server validates inbound
 messages against it.
 
@@ -10,6 +10,8 @@ messages against it.
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | `{"ok":true,"api":"v1"}` |
+| `GET /v1/news` | Launcher home-screen news, `{"items":[{"id","title","summary","url","imageUrl"?,"publishedAt","tag"?}]}`, newest first, at most 20. URLs are `https`; `publishedAt` is RFC 3339 UTC to the second. `Cache-Control: public, max-age=300`. Items live in [`src/news.ts`](src/news.ts) and ship with each deploy. |
+| `GET /v1/featured` | Launcher featured servers, `{"servers":[{"id","name","address","port","description"?,"imageUrl"?,"motd"?,"tags"?}]}`, at most 24. `address` is a host name, or an experience id when `port` is 0. Same caching and source rules as news, from [`src/featured.ts`](src/featured.ts). |
 | `POST /v1/releases` | Release hook. `Authorization: Bearer <RELEASE_HOOK_SECRET>`, body `{"channel","version","build"}`; records and broadcasts only a newer (version, build) pair. Repeats and older records are no-ops. Omitted v1 builds mean zero. |
 | `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs or UUIDs recently used Cinnabar, and receives release pushes. |
 
@@ -58,6 +60,8 @@ The text frame `ping` gets `pong` without waking the Hub.
   admission-hash salt. Pending handshake attachments contain a salted hash of their IPv4 address
   or IPv6 /64, removed on authentication or close. In-memory counters rebuild from these hashes
   on wake. Raw IP addresses are used only to compute the hash during admission.
+- `GET /v1/news` and `GET /v1/featured` serve bundled lists without auth; they neither log nor
+  store anything and do not wake the Hub.
 - Server addresses are not sent, but submitted roster XUIDs can reveal who shares a server.
   Player data is not logged. Analytics Engine receives only fixed event labels and counts for
   admission refusals, authentication failures, overload closes and lookups, with no identifiers
