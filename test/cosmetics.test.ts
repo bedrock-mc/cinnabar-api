@@ -4,7 +4,7 @@ import schema from "../schema/v1.json";
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { Hub } from "../src/hub";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { hub, installFakeIssuer, login, type Client } from "./helpers";
 import { identityUuid } from "../src/identity";
 import { admitLoadout, catalog } from "../src/cosmetics";
@@ -76,6 +76,47 @@ it("restores session loadouts through hibernation without an emote lease", async
     await rebuilt.webSocketMessage(receiver, JSON.stringify({ type: "emote_state", emote_id: null, elapsed_ms: 0, xuids: [A] }));
   });
   expect(await b.next()).toMatchObject({ type: "loadout", revision: 3, slots: { head: item.id } });
+});
+
+it.each([
+  { departure: "absent", remaining: false },
+  { departure: "closing", remaining: false },
+  { departure: "absent", remaining: true },
+  { departure: "closing", remaining: true },
+])("updates nearby loadouts after a publisher disconnects during hibernation ($departure, remaining socket: $remaining)", async ({ departure, remaining }) => {
+  const a = await player(A), b = await player(B);
+  const a2 = remaining ? await player(A) : undefined;
+  watch(a, [B]); watch(b, [A]);
+  if (a2) { watch(a2, [B]); await flush(a2); }
+  await flush(a); await flush(b);
+  equip(a, 4); await b.next();
+  await runInDurableObject(hub(), async (_, state) => {
+    const sockets = state.getWebSockets();
+    const publisher = sockets.find((ws) => ws.deserializeAttachment()?.xuid === A)!;
+    const receiver = sockets.find((ws) => ws.deserializeAttachment()?.xuid === B)!;
+    const listed = vi.spyOn(state, "getWebSockets").mockReturnValue(
+      departure === "absent" ? sockets.filter((ws) => ws !== publisher) : sockets,
+    );
+    const readyState = vi.spyOn(publisher, "readyState", "get").mockReturnValue(
+      departure === "absent" ? WebSocket.CLOSED : WebSocket.CLOSING,
+    );
+    const sent = vi.spyOn(receiver, "send");
+    try {
+      const rebuilt = new Hub(state, env);
+      const closing = rebuilt.webSocketClose(publisher, 1000, "");
+      expect(sent.mock.calls.map(([frame]) => JSON.parse(frame as string))).toEqual([
+        { type: "loadout", xuid: A, uuid: await identityUuid(A), revision: 4, slots: remaining ? { head: item.id } : {} },
+      ]);
+      await closing;
+      sent.mockClear();
+      await rebuilt.webSocketClose(publisher, 1000, "");
+      expect(sent).not.toHaveBeenCalled();
+    } finally {
+      listed.mockRestore();
+      readyState.mockRestore();
+      sent.mockRestore();
+    }
+  });
 });
 
 it("ignores unknown slots and items, and rejects wrong-slot replacements atomically", async () => {

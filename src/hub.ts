@@ -602,10 +602,11 @@ export class Hub extends DurableObject<Env> {
     else this.pendingByIp.set(hash, remaining);
   }
 
-  /** Removes session indexes and retains recent visible usage only in memory. */
+  /** Removes session indexes, recovering departure state from the socket after hibernation. */
   private forget(ws: WebSocket): void {
     this.releasePendingIp(ws);
-    const attachment = this.sessions.get(ws);
+    const attachment = this.sessions.get(ws)
+      ?? (ws.deserializeAttachment() as Attachment | typeof CLOSED | null);
     this.sessions.delete(ws);
     try {
       ws.serializeAttachment(CLOSED);
