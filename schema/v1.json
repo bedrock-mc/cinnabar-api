@@ -199,7 +199,7 @@
       "pattern": "^[a-z0-9_.:-]+$"
     },
     "EmoteState": {
-      "description": "Replaces the nearby-player watch list and local emote. The combined identifier limit is 128. Null stops playback; elapsed_ms is the current playback phase. Receivers ignore unknown clips.",
+      "description": "Replaces the nearby-player watch list and local emote. The combined identifier limit is 128. Null stops playback; elapsed_ms is the current playback phase. Omitting both identifier arrays retains subscriptions; an empty array clears them. Receivers ignore unknown clips.",
       "type": "object",
       "required": [
         "type",

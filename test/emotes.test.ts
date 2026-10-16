@@ -72,7 +72,7 @@ it("honors visibility opt-out and removes departed subscriptions", async () => {
   a.send({ type: "emote_state", xuids: [B], emote_id: CLIP, elapsed_ms: 0 });
   await flush(a);
   await flush(b);
-  b.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
+  b.send({ type: "emote_state", xuids: [], uuids: [], emote_id: null, elapsed_ms: 0 });
   await flush(b);
   a.send({ type: "visibility", visible: true });
   a.send({ type: "emote_state", xuids: [B], emote_id: CLIP, elapsed_ms: 0 });
@@ -87,7 +87,7 @@ it("replays a live dance to new watchers and refuses expired leases", async () =
   await flush(a);
   b.send({ type: "emote_state", xuids: [A], emote_id: null, elapsed_ms: 0 });
   expect(await b.next()).toMatchObject({ xuid: A, emote_id: CLIP });
-  b.send({ type: "emote_state", emote_id: null, elapsed_ms: 0 });
+  b.send({ type: "emote_state", xuids: [], uuids: [], emote_id: null, elapsed_ms: 0 });
   await flush(b);
   await runInDurableObject(hub(), async (_, state) => {
     const source = state.getWebSockets().find((ws) => ws.deserializeAttachment()?.xuid === A)!;

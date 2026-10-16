@@ -334,7 +334,8 @@ export class Hub extends DurableObject<Env> {
 
   /** Replaces bounded nearby subscriptions and publishes only the authenticated account's emote. */
   private onEmoteState(ws: WebSocket, state: Ready, message: EmoteState, now: number): void {
-    const watching = [...new Set([...(message.xuids ?? []), ...(message.uuids ?? [])])];
+    const watching = message.xuids === undefined && message.uuids === undefined
+      ? state.watching ?? [] : [...new Set([...(message.xuids ?? []), ...(message.uuids ?? [])])];
     const previous = new Set(state.watching ?? []);
     for (const id of previous) unindex(this.emoteWatchers, id, ws);
     const emote = state.visible && message.emote_id !== null

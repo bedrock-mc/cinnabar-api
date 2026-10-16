@@ -68,7 +68,8 @@ The text frame `ping` gets `pong` without waking the Hub.
 ## Shared emotes
 
 Authenticated clients send `emote_state` with a clip identifier (or `null` to stop), elapsed
-playback time, and up to 128 nearby XUIDs/UUIDs combined. The hub forwards `emote` updates only
+playback time, and up to 128 nearby XUIDs/UUIDs combined. Phase refreshes can omit both
+identifier arrays to retain existing watches; an explicit empty array clears them. The hub forwards `emote` updates only
 when both clients report each other nearby. It derives sender identities from authentication;
 clients cannot supply another account's identity. Clients ignore unknown clip identifiers.
 
