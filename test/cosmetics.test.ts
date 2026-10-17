@@ -188,3 +188,18 @@ it("preserves the account loadout on a new socket and restores visibility withou
   expect(await b.next()).toMatchObject({ revision: 12, slots: { head: item.id } });
   await flush(b);
 });
+
+
+it("shares a hat and animated wings together and preserves wings when changing hats", async () => {
+  const wings = catalog.items.find((item) => item.id === "cinnabar:dragon_wings")!;
+  const crown = catalog.items.find((item) => item.id === "cinnabar:crown")!;
+  expect(wings.slot).toBe("back");
+  const a = await player(A), b = await player(B);
+  watch(a, [B]); watch(b, [A]); await flush(a); await flush(b);
+  equip(a, 1, { head: item.id, back: wings.id });
+  expect(await b.next()).toMatchObject({ revision: 1, slots: { head: item.id, back: wings.id } });
+  equip(a, 2, { head: crown.id, back: wings.id });
+  expect(await b.next()).toMatchObject({ revision: 2, slots: { head: crown.id, back: wings.id } });
+  equip(a, 3, { head: null, back: wings.id });
+  expect(await b.next()).toMatchObject({ revision: 3, slots: { head: null, back: wings.id } });
+});

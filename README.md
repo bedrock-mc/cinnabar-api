@@ -111,7 +111,10 @@ and [LICENSES/cosmetics.md](LICENSES/cosmetics.md).
 public cache lifetime. Each item declares a namespaced ID, a slot, a display name,
 free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
 and render flags. Geometry, PNG texture and optional animation assets each declare a
-URL, SHA-256 digest and byte count. The catalog includes original bunny ears, the crown and red devil horns.
+URL, SHA-256 digest and byte count. The catalog includes original bunny ears, the crown, red devil horns and animated dragon wings.
+Dragon wings occupy the `back` slot and can be worn alongside a `head` cosmetic.
+Their animation asset includes a looping rotation clip and a continuous `tip_flex` profile;
+clients must support both before displaying this item.
 The original artwork retains Cinnabar's [PolyForm Noncommercial 1.0.0 license](LICENSES/cosmetics.md).
 The Worker code remains MIT-licensed.
 
