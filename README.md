@@ -10,6 +10,7 @@ messages against it.
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | `{"ok":true,"api":"v1"}` |
+| `GET /v1/presence/count` | Public `{"online":0}` count of unique connected, authenticated accounts with visibility on. Allows cross-origin reads and caching for 30 seconds. No identifiers or retained offline presence. |
 | `POST /v1/releases` | Release hook. `Authorization: Bearer <RELEASE_HOOK_SECRET>`, body `{"channel","version","build"}`; records and broadcasts only a newer (version, build) pair. Repeats and older records are no-ops. Omitted v1 builds mean zero. |
 | `GET /v1/connect` | WebSocket. The client authenticates with a Minecraft multiplayer token plus an ES384 proof of its key, then can toggle visibility, look up which XUIDs or UUIDs recently used Cinnabar, and receives release pushes. |
 
@@ -43,6 +44,8 @@ The text frame `ping` gets `pong` without waking the Hub.
 
 ## Privacy
 
+- The public online count includes each visible connected account once, even with several sockets.
+  Visibility off excludes that socket; an account counts while any of its open sockets is visible.
 - Lookups answer “uses Cinnabar,” rather than providing an exact online status. Visible accounts
   linger in Hub memory for `PRESENCE_LINGER_MS` (30 minutes) after their last socket closes.
   Visibility off clears retained presence immediately; another visible socket can still make
