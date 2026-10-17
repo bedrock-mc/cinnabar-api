@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { Hub } from "../src/hub";
-import { ONLINE_COUNT_TTL_MS } from "../src/index";
+import { ONLINE_COUNT_TTL_MS } from "../src/routing";
 import { connect, hub, installFakeIssuer, login, type Client } from "./helpers";
 
 const open: Client[] = [];
