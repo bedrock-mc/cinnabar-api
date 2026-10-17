@@ -29,6 +29,6 @@ for (const name of missing) {
   const file = join(directory, name);
   const digest = createHash("sha256").update(readFileSync(file)).digest("hex");
   if (digest !== name) throw new Error(`${file} hashes to ${digest}`);
-  execFileSync("npx", ["wrangler", "r2", "object", "put", `${bucket}/${name}`, "--file", file, "--remote"], { stdio: "inherit" });
+  execFileSync("pnpm", ["exec", "wrangler", "r2", "object", "put", `${bucket}/${name}`, "--file", file, "--remote"], { stdio: "inherit" });
 }
 console.log(`uploaded ${missing.length} of ${readdirSync(directory).length} cosmetic assets`);

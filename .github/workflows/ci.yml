@@ -16,13 +16,14 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
 
   deploy:
     needs: test
@@ -49,14 +50,16 @@ jobs:
         with:
           persist-credentials: false
       - if: steps.head.outputs.current == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.head.outputs.current == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
       - if: steps.head.outputs.current == 'true'
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       # Assets go up before the Worker so a new catalog never names a missing object.
       - if: steps.head.outputs.current == 'true'
         run: node scripts/sync-cosmetic-assets.mjs
       - if: steps.head.outputs.current == 'true'
-        run: npx wrangler deploy
+        run: pnpm exec wrangler deploy

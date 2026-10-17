@@ -6,13 +6,29 @@ import { hubFor } from "./routing";
 export { Hub } from "./hub";
 
 const MAX_HOOK_BODY_BYTES = 1024;
+/** How long an isolate reuses the online count, so website traffic never reaches the hub per visitor. */
+export const ONLINE_COUNT_TTL_MS = 30_000;
+
+/** This isolate's latest count; concurrent requests share one hub call, and a failed call is not kept. */
+let onlineCount: { at: number; value: Promise<number> } | undefined;
+
+function cachedOnlineCount(env: Env): Promise<number> {
+  const now = Date.now();
+  const age = onlineCount ? now - onlineCount.at : -1;
+  if (!onlineCount || age < 0 || age >= ONLINE_COUNT_TTL_MS) {
+    const entry = { at: now, value: hubFor(env).onlineCount() };
+    entry.value.catch(() => { if (onlineCount === entry) onlineCount = undefined; });
+    onlineCount = entry;
+  }
+  return onlineCount.value;
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
 
 app.get("/v1/presence/count", async (c) => {
-  const online = await hubFor(c.env).onlineCount();
+  const online = await cachedOnlineCount(c.env);
   return c.json({ online }, 200, {
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": "public, max-age=30",
