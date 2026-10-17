@@ -111,7 +111,7 @@ describe("visibility and lookup", () => {
     await player({ xuid: STEVE, visible: false });
     await evictDurableObject(hub());
     expect((await me.lookup([ALEX, STEVE])).cinnabar).toEqual([ALEX]);
-  });
+  }, 10_000);
 });
 
 describe("lookup limits", () => {

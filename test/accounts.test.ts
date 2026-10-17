@@ -43,6 +43,12 @@ describe("per-account admission", () => {
 });
 
 describe("per-account lookup bucket", () => {
+  beforeEach(() => {
+    // Token refill advances only when a test explicitly advances this clock.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    return () => clock.mockRestore();
+  });
+
   it("keeps a visibility opt-out while a refused lookup is completing", async () => {
     const client = await player();
     await drain(client);

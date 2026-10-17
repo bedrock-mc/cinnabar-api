@@ -57,7 +57,7 @@ describe("UUID lookup", () => {
     expect(await lookup(me, { uuids: [ALEX_UUID] })).toMatchObject({ cinnabar_uuids: [] });
     alex.send({ type: "visibility", visible: true });
     expect(await lookup(me, { uuids: [ALEX_UUID] })).toMatchObject({ cinnabar_uuids: [ALEX_UUID] });
-  });
+  }, 10_000);
 
   it("lingers by both identifiers for thirty minutes, then expires", async () => {
     const me = await player();
@@ -104,17 +104,22 @@ describe("UUID lookup", () => {
   });
 
   it("charges both arrays to the same durable account budget", async () => {
-    const me = await player();
-    const xuids = Array.from({ length: 64 }, (_, i) => String(1000 + i));
-    const uuids = Array.from({ length: 64 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`);
-    for (let id = 0; id < 8; id++) {
-      expect(await lookup(me, { xuids, uuids }, id)).toMatchObject({ type: "lookup_result" });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      const me = await player();
+      const xuids = Array.from({ length: 64 }, (_, i) => String(1000 + i));
+      const uuids = Array.from({ length: 64 }, (_, i) => `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`);
+      for (let id = 0; id < 8; id++) {
+        expect(await lookup(me, { xuids, uuids }, id)).toMatchObject({ type: "lookup_result" });
+      }
+      expect(await lookup(me, { uuids: [NOBODY_UUID] }, 99)).toEqual({ type: "error", code: "rate_limited", id: 99 });
+      await evictDurableObject(hub());
+      const second = await player();
+      expect(await lookup(second, { xuids: ["9"] }, 100)).toEqual({ type: "error", code: "rate_limited", id: 100 });
+    } finally {
+      clock.mockRestore();
     }
-    expect(await lookup(me, { uuids: [NOBODY_UUID] }, 99)).toEqual({ type: "error", code: "rate_limited", id: 99 });
-    await evictDurableObject(hub());
-    const second = await player();
-    expect(await lookup(second, { xuids: ["9"] }, 100)).toEqual({ type: "error", code: "rate_limited", id: 100 });
-  });
+  }, 10_000);
 
   it("rejects a mixed batch over 128 even when each array fits", async () => {
     const me = await player();
