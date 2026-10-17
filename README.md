@@ -120,6 +120,9 @@ public cache lifetime. Each item declares a namespaced ID, a slot, a display nam
 free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
 and render flags. Geometry, PNG texture and optional animation assets each declare a
 URL, SHA-256 digest and byte count. The catalog includes original bunny ears, the crown, red devil horns, animated dragon wings and a shoulder parrot.
+Catalog version 5 adds ten original items that fill every slot: studio headphones and a halo (`head`),
+pixel shades and a kitsune mask (`face`), morpho wings and an ember jetpack (`back`), a fox tail and
+a knit scarf (`body`), a bee buddy (`pet`) and an amethyst orbit (`aura`).
 The shoulder parrot occupies the `pet` slot and appears in the wardrobe’s Pets category.
 Dragon wings occupy the `back` slot and can be worn alongside a `head` cosmetic.
 Their animation asset includes a looping rotation clip and a continuous `tip_flex` profile;
@@ -156,3 +159,10 @@ Optional animation JSON currently describes `wind` motion: an axis (`x`, `y` or 
 and a `joints` map from authored bone names to weights in `[0,1]`. Clients validate
 budgets and ignore unsupported items. `render_flags.double_sided` requests a reverse
 face for each triangle.
+`render_flags.emissive` draws every opaque texel fullbright in the world; wardrobe galleries and previews
+are unchanged, and older clients draw the item normally lit.
+
+An animation asset may also list up to four `particles` emitters: a geometry `bone`, an `offset` in model
+pixels from that bone's pivot, and a complete Bedrock particle `effect`. Clients follow the posed bone in
+the world only, rename each effect to a client-owned identifier, and ignore the field when unsupported.
+The catalog's effects use only sprites from the player's installed vanilla particle atlas.
