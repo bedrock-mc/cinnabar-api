@@ -37,14 +37,26 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      # Runs can finish testing out of order; only main's current head deploys, so an older run never rolls back.
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then echo current=true >> "$GITHUB_OUTPUT"; else echo "main moved to $head; skipping"; fi
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - if: steps.head.outputs.current == 'true'
+        run: npm ci
       # Assets go up before the Worker so a new catalog never names a missing object.
-      - run: node scripts/sync-cosmetic-assets.mjs
-      - run: npx wrangler deploy
+      - if: steps.head.outputs.current == 'true'
+        run: node scripts/sync-cosmetic-assets.mjs
+      - if: steps.head.outputs.current == 'true'
+        run: npx wrangler deploy
