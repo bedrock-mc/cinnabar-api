@@ -25,6 +25,9 @@
     },
     {
       "$ref": "#/$defs/CosmeticsCatalog"
+    },
+    {
+      "$ref": "#/$defs/OnlineCountResponse"
     }
   ],
   "$defs": {
@@ -708,6 +711,19 @@
           }
         }
       }
+    },
+    "OnlineCountResponse": {
+      "description": "GET /v1/presence/count: unique visible accounts with an open authenticated socket; excludes retained offline presence.",
+      "type": "object",
+      "required": [
+        "online"
+      ],
+      "properties": {
+        "online": {
+          "$ref": "#/$defs/U32"
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

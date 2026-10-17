@@ -100,6 +100,21 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
+  /** Counts unique visible accounts with an open authenticated socket, excluding retained presence. */
+  onlineCount(): number {
+    let count = 0;
+    for (const sockets of this.byXuid.values()) {
+      for (const ws of sockets) {
+        const session = this.sessions.get(ws);
+        if (ws.readyState === WebSocket.OPEN && session?.stage === "ready" && session.visible) {
+          count++;
+          break;
+        }
+      }
+    }
+    return count;
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response(null, { status: 426, headers: { Upgrade: "websocket" } });

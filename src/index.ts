@@ -11,6 +11,14 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
 
+app.get("/v1/presence/count", async (c) => {
+  const online = await hubFor(c.env).onlineCount();
+  return c.json({ online }, 200, {
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "public, max-age=30",
+  });
+});
+
 app.get("/v1/cosmetics/catalog", (c) => catalogResponse(c.req.raw));
 app.get("/v1/cosmetics/assets/:hash", (c) => assetResponse(c.req.param("hash"), c.env.COSMETIC_ASSETS));
 
