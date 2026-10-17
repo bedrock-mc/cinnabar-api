@@ -96,8 +96,13 @@ cp .dev.vars.example .dev.vars && npm run dev
 
 ## Deploy
 
+CI deploys every push to `main` after the tests pass: it uploads cosmetic assets missing from R2, then runs
+`wrangler deploy`. The job runs in the `production` environment, whose `CLOUDFLARE_API_TOKEN` secret only
+`main` can read. A manual deploy runs the same two steps:
+
 ```sh
-npx wrangler secret put RELEASE_HOOK_SECRET
+npx wrangler secret put RELEASE_HOOK_SECRET   # once
+node scripts/sync-cosmetic-assets.mjs
 npx wrangler deploy
 ```
 

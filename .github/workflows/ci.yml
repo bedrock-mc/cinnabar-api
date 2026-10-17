@@ -23,3 +23,40 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The environment only admits main, so pull request runs never see the token.
+    environment: production
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      # Runs can finish testing out of order; only main's current head deploys, so an older run never rolls back.
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then echo current=true >> "$GITHUB_OUTPUT"; else echo "main moved to $head; skipping"; fi
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.head.outputs.current == 'true'
+        run: npm ci
+      # Assets go up before the Worker so a new catalog never names a missing object.
+      - if: steps.head.outputs.current == 'true'
+        run: node scripts/sync-cosmetic-assets.mjs
+      - if: steps.head.outputs.current == 'true'
+        run: npx wrangler deploy
