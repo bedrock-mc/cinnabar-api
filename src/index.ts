@@ -1,7 +1,7 @@
 import { catalogResponse, assetResponse } from "./cosmetics";
 import { Hono } from "hono";
 import { isReleaseHookRequest } from "./protocol";
-import { hubFor } from "./routing";
+import { cachedOnlineCount, hubFor } from "./routing";
 
 export { Hub } from "./hub";
 
@@ -12,7 +12,7 @@ const app = new Hono<{ Bindings: Env }>();
 app.get("/v1/health", (c) => c.json({ ok: true, api: "v1" }));
 
 app.get("/v1/presence/count", async (c) => {
-  const online = await hubFor(c.env).onlineCount();
+  const online = await cachedOnlineCount(c.env);
   return c.json({ online }, 200, {
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": "public, max-age=30",

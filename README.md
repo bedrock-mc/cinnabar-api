@@ -85,10 +85,10 @@ no emote history is written to durable storage or logs. No server addresses are 
 ## Development
 
 ```sh
-npm ci
-npm test           # vitest in the Workers runtime
-npm run typecheck
-cp .dev.vars.example .dev.vars && npm run dev
+pnpm install
+pnpm test          # vitest in the Workers runtime
+pnpm typecheck
+cp .dev.vars.example .dev.vars && pnpm dev
 ```
 
 `ISSUER` (in `wrangler.jsonc`) is the multiplayer-token OIDC issuer; its JWKS is found through
@@ -101,9 +101,9 @@ CI deploys every push to `main` after the tests pass: it uploads cosmetic assets
 `main` can read. A manual deploy runs the same two steps:
 
 ```sh
-npx wrangler secret put RELEASE_HOOK_SECRET   # once
+pnpm exec wrangler secret put RELEASE_HOOK_SECRET   # once
 node scripts/sync-cosmetic-assets.mjs
-npx wrangler deploy
+pnpm exec wrangler deploy
 ```
 
 The release hook rejects every request until `RELEASE_HOOK_SECRET` is set.

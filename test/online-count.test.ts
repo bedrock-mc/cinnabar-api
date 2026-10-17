@@ -1,7 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { Hub } from "../src/hub";
+import { ONLINE_COUNT_TTL_MS } from "../src/routing";
 import { connect, hub, installFakeIssuer, login, type Client } from "./helpers";
 
 const open: Client[] = [];
@@ -15,9 +16,20 @@ async function player(options: Parameters<typeof login>[0] = {}) {
   return client;
 }
 
-/** Reads the public aggregate without authentication. */
+/** Fixed base for the mocked clock, so cache ages are exactly the offset differences. */
+const base = Date.now();
+let skipped = 0;
+
+/** Reads the public aggregate without authentication, past any count this isolate has cached. */
 async function count() {
-  const response = await exports.default.fetch("https://api.test/v1/presence/count");
+  skipped += ONLINE_COUNT_TTL_MS;
+  return cachedCount(skipped);
+}
+
+/** Reads the aggregate with the clock moved `offset` ms ahead, leaving any cached count in place. */
+async function cachedCount(offset: number) {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(base + offset);
+  const response = await exports.default.fetch("https://api.test/v1/presence/count").finally(() => clock.mockRestore());
   expect(response.status).toBe(200);
   expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
   expect(response.headers.get("Cache-Control")).toBe("public, max-age=30");
@@ -69,4 +81,11 @@ it("does not restore a server-closed account before its close completes", async 
     expect(instance.onlineCount()).toBe(0);
     expect(new Hub(state, env).onlineCount()).toBe(0);
   });
+});
+
+it("reuses a count for its time to live, then asks the hub again", async () => {
+  expect(await count()).toEqual({ online: 0 });
+  await player({ xuid: "101" });
+  expect(await cachedCount(skipped + ONLINE_COUNT_TTL_MS - 1)).toEqual({ online: 0 });
+  expect(await count()).toEqual({ online: 1 });
 });
