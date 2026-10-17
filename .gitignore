@@ -3,3 +3,6 @@ node_modules/
 .dev.vars
 worker-configuration.d.ts
 .DS_Store
+
+# Python cosmetic authoring tools.
+__pycache__/

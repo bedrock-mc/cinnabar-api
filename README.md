@@ -162,7 +162,25 @@ face for each triangle.
 `render_flags.emissive` draws every opaque texel fullbright in the world; wardrobe galleries and previews
 are unchanged, and older clients draw the item normally lit.
 
-An animation asset may also list up to four `particles` emitters: a geometry `bone`, an `offset` in model
+An animation asset may also list up to eight `particles` emitters: a geometry `bone`, an `offset` in model
 pixels from that bone's pivot, and a complete Bedrock particle `effect`. Clients follow the posed bone in
 the world only, rename each effect to a client-owned identifier, and ignore the field when unsupported.
-The catalog's effects use only sprites from the player's installed vanilla particle atlas.
+Effects may use the installed particle atlas or a 16x16 sprite region from the item's own texture (`atlas.cosmetic`).
+
+## Cosmetic ownership
+
+This repository owns the complete cosmetic catalog, editable Blockbench projects,
+textures, animations, exporter and deployable assets. See [art/cosmetics](art/cosmetics/README.md)
+for editing instructions. Run `pnpm check:cosmetics` before publishing; CI checks
+every project against its exports and the catalog's packaged hashes and byte counts.
+Keep the artwork's PolyForm Noncommercial license and attribution.
+
+Cinnabar downloads, validates, caches and renders these assets. Its repository owns
+renderer behavior and small stable regression fixtures, not a copy of each catalog
+item. New items using supported features ship here alone. New rendering features
+need client support and focused client tests before the catalog uses them.
+
+For a full renderer compatibility check, point the client's
+`api_catalog_assets_admit_through_client_validation` test at this checkout with
+`CINNABAR_API_CHECKOUT`. This uses the actual API catalog and assets without copying
+them into the client. It complements API export checks and client feature tests.
