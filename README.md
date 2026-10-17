@@ -114,7 +114,8 @@ and [LICENSES/cosmetics.md](LICENSES/cosmetics.md).
 public cache lifetime. Each item declares a namespaced ID, a slot, a display name,
 free ownership, tags, a geometry identifier, an attachment bone, an offset in blocks
 and render flags. Geometry, PNG texture and optional animation assets each declare a
-URL, SHA-256 digest and byte count. The catalog includes original bunny ears, the crown, red devil horns and animated dragon wings.
+URL, SHA-256 digest and byte count. The catalog includes original bunny ears, the crown, red devil horns, animated dragon wings and a shoulder parrot.
+The shoulder parrot occupies the `pet` slot and appears in the wardrobe’s Pets category.
 Dragon wings occupy the `back` slot and can be worn alongside a `head` cosmetic.
 Their animation asset includes a looping rotation clip and a continuous `tip_flex` profile;
 clients must support both before displaying this item.

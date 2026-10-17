@@ -203,3 +203,16 @@ it("shares a hat and animated wings together and preserves wings when changing h
   equip(a, 3, { head: null, back: wings.id });
   expect(await b.next()).toMatchObject({ revision: 3, slots: { head: null, back: wings.id } });
 });
+
+
+it("shares the pet, head and back slots together and removes a pet independently", async () => {
+  const pet = catalog.items.find((item) => item.id === "cinnabar:shoulder_parrot")!;
+  const wings = catalog.items.find((item) => item.id === "cinnabar:dragon_wings")!;
+  expect(pet.slot).toBe("pet");
+  const a = await player(A), b = await player(B);
+  watch(a, [B]); watch(b, [A]); await flush(a); await flush(b);
+  equip(a, 1, { head: item.id, back: wings.id, pet: pet.id });
+  expect(await b.next()).toMatchObject({ revision: 1, slots: { head: item.id, back: wings.id, pet: pet.id } });
+  equip(a, 2, { head: item.id, back: wings.id, pet: null });
+  expect(await b.next()).toMatchObject({ revision: 2, slots: { head: item.id, back: wings.id, pet: null } });
+});
