@@ -682,6 +682,10 @@
           "properties": {
             "double_sided": {
               "type": "boolean"
+            },
+            "emissive": {
+              "type": "boolean",
+              "description": "Draws every opaque texel fullbright in the world; galleries and previews are unchanged. Clients that predate it draw the item normally lit."
             }
           }
         },
